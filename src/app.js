@@ -23,16 +23,44 @@ function canChangeNickname(lastChangeDateStr) {
 }
 
 // 向 GAS 查詢最新 Members + Memberships 白名單
+// 向 GAS 查詢最新 Members + Memberships 白名單
 async function fetchGASWhitelist(email) {
+    // 正式環境禁止使用預設 Deployment ID
     if (!GAS_API_URL || GAS_API_URL.includes("YOUR_GAS_DEPLOYMENT_ID")) {
-        console.warn("GAS_API_URL 未設定，進入預設白名單驗證模式");
-        return {
-            status: "success",
-            member: { email: email, realName: "測試學生", role: "student", status: "active" },
-            memberships: [{ courseId: "1A", expireDate: "2027-12-31", status: "active" }]
-        };
+        throw new Error("GAS_API_URL 尚未設定，請填入正式部署的 Google Apps Script Web App URL。");
     }
 
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const response = await fetch(
+            `${GAS_API_URL}?email=${encodeURIComponent(email.trim().toLowerCase())}`,
+            {
+                method: "GET",
+                signal: controller.signal
+            }
+        );
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error(`GAS API HTTP Error ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (!result || typeof result !== "object") {
+            throw new Error("GAS 回傳格式錯誤");
+        }
+
+        return result;
+
+    } catch (err) {
+        console.error("讀取 GAS 白名單失敗：", err);
+        throw err;
+    }
+}
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
@@ -71,15 +99,20 @@ async function handleGoogleLogin() {
         // 1. 查詢 GAS 白名單
         const gasResult = await fetchGASWhitelist(user.email);
 
-        if (!gasResult || gasResult.status !== "success") {
+        if (
+            !gasResult ||
+            gasResult.status !== "success"
+        ) {
             await firebase.auth().signOut();
+        
             if (errorDiv) {
-                errorDiv.innerText = "❌ 存取被拒絕：您的 Email 未開通白名單權限或已被停權！";
-                errorDiv.classList.remove('hidden');
+                errorDiv.innerText =
+                    "❌ 您的帳號未開通、已停權或課程已失效，請聯絡管理員。";
+                errorDiv.classList.remove("hidden");
             }
+        
             return;
         }
-
         // 2. 進行 Firebase 資料同步
         await syncUserToFirestore(user, gasResult.member, gasResult.memberships);
 
