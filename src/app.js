@@ -305,7 +305,9 @@ function listenForFriendRequests(uid) {
         }, err => {
             console.error("監聽好友邀請失敗:", err);
         });
-    function renderPendingFriendRequests(requests) {
+}
+
+function renderPendingFriendRequests(requests) {
     const container = document.getElementById('pending-friend-requests-container');
     if (!container) return;
 
@@ -477,7 +479,6 @@ async function fetchGlobalLeaderboard(courseLevel) {
         container.innerHTML = `<p style="font-size: 0.85rem; color: var(--duo-red); margin: 10px 0;">全球排行榜載入失敗</p>`;
     }
 }
-
 // 🎯 全域安全事件綁定 Helper（加入問題 B 除錯輸出）
 function bindClick(elementId, handler) {
     const el = document.getElementById(elementId);
