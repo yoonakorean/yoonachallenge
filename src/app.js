@@ -24,13 +24,16 @@ function canChangeNickname(lastChangeDateStr) {
 
 // 向 GAS 查詢最新 Members + Memberships 白名單
 async function fetchGASWhitelist(email) {
+
     // 正式環境禁止使用預設 Deployment ID
     if (!GAS_API_URL || GAS_API_URL.includes("YOUR_GAS_DEPLOYMENT_ID")) {
         throw new Error("GAS_API_URL 尚未設定，請填入正式部署的 Google Apps Script Web App URL。");
     }
 
     try {
+
         const controller = new AbortController();
+
         const timeoutId = setTimeout(() => controller.abort(), 8000);
 
         const response = await fetch(
@@ -56,27 +59,16 @@ async function fetchGASWhitelist(email) {
         return result;
 
     } catch (err) {
+
         console.error("讀取 GAS 白名單失敗：", err);
+
         throw err;
     }
 }
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-        const response = await fetch(`${GAS_API_URL}?email=${encodeURIComponent(email)}`, {
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
 
-        if (!response.ok) throw new Error(`GAS API 狀態碼異常: ${response.status}`);
-        return await response.json();
-    } catch (err) {
-        console.error("讀取 GAS 白名單失敗:", err);
-        return null;
-    }
-}
-
+// Google Sign-In 登入流程
+async function handleGoogleLogin() {
 // Google Sign-In 登入流程
 async function handleGoogleLogin() {
     console.log("🔍 [DEBUG] 觸發 handleGoogleLogin()");
