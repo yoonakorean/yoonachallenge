@@ -234,23 +234,52 @@ function renderCourseMap() {
     const container = document.getElementById('units-map-list');
     if (!container) return;
 
-    container.innerHTML = `
-        <div class="unit-card">
-            <div class="unit-header">
-                <div class="unit-title"><i class="fa-solid fa-map-location-dot" style="color: var(--duo-blue);"></i> 韓語 - ${currentSelectedLevel} 學習關卡</div>
+    const userLastUnit = currentMemberData?.lastUnit || 1;
+    const userLastStage = currentMemberData?.lastStage || 1;
+
+    // 依據 Unit 與 Stage 進度動態生成關卡地圖
+    const unitsData = [
+        { unit: 1, title: `韓語 - ${currentSelectedLevel} 基礎學習`, stages: [1, 2, 3] },
+        { unit: 2, title: `韓語 - ${currentSelectedLevel} 進階應用`, stages: [1, 2, 3] }
+    ];
+
+    container.innerHTML = unitsData.map(u => {
+        const stagesHtml = u.stages.map(s => {
+            let isLocked = true;
+            if (u.unit < userLastUnit) {
+                isLocked = false;
+            } else if (u.unit === userLastUnit && s <= userLastStage) {
+                isLocked = false;
+            }
+
+            if (isLocked) {
+                return `<button class="stage-btn-3d locked" data-unit="${u.unit}" data-stage="${s}"><i class="fa-solid fa-lock"></i> 階段 ${s}</button>`;
+            } else {
+                return `<button class="stage-btn-3d" data-unit="${u.unit}" data-stage="${s}"><i class="fa-solid fa-star"></i> 階段 ${s}</button>`;
+            }
+        }).join('');
+
+        return `
+            <div class="unit-card">
+                <div class="unit-header">
+                    <div class="unit-title"><i class="fa-solid fa-map-location-dot" style="color: var(--duo-blue);"></i> ${u.title}</div>
+                </div>
+                <div class="stages-path">
+                    ${stagesHtml}
+                </div>
             </div>
-            <div class="stages-path">
-                <button class="stage-btn-3d" data-unit="1" data-stage="1"><i class="fa-solid fa-star"></i> 階段 1</button>
-                <button class="stage-btn-3d locked" data-unit="1" data-stage="2"><i class="fa-solid fa-lock"></i> 階段 2</button>
-            </div>
-        </div>
-    `;
+        `;
+    }).join('');
 
     container.querySelectorAll('.stage-btn-3d').forEach(btn => {
         btn.onclick = () => {
             if (btn.classList.contains('locked')) {
                 const modal = document.getElementById('modal-locked');
                 if (modal) modal.classList.remove('hidden');
+            } else {
+                const unit = btn.getAttribute('data-unit');
+                const stage = btn.getAttribute('data-stage');
+                alert(`進入 ${currentSelectedLevel} 課程 - 單元 ${unit} 階段 ${stage}`);
             }
         };
     });
