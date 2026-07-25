@@ -305,6 +305,178 @@ function listenForFriendRequests(uid) {
         }, err => {
             console.error("監聽好友邀請失敗:", err);
         });
+    function renderPendingFriendRequests(requests) {
+    const container = document.getElementById('pending-friend-requests-container');
+    if (!container) return;
+
+    if (!requests || requests.length === 0) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = requests.map(req => `
+        <div class="friend-request-card">
+            <div style="font-size:0.88rem; font-weight:bold; color:#1f2937;">
+                <i class="fa-solid fa-user-clock" style="color:var(--duo-blue);"></i> ${req.fromNickname} 邀請您成為好友
+            </div>
+            <div style="font-size:0.78rem; color:#6b7280;">(${req.fromEmail})</div>
+            <div style="display:flex; gap:8px; margin-top:6px;">
+                <button class="btn-3d btn-3d-primary btn-accept-req" data-id="${req.id}" data-from="${req.fromUid}" style="padding:4px 10px; font-size:0.8rem !important;">接受</button>
+                <button class="btn-3d btn-3d-secondary btn-reject-req" data-id="${req.id}" style="padding:4px 10px; font-size:0.8rem !important;">拒絕</button>
+            </div>
+        </div>
+    `).join('');
+
+    container.querySelectorAll('.btn-accept-req').forEach(btn => {
+        btn.onclick = () => {
+            const reqId = btn.getAttribute('data-id');
+            const fromUid = btn.getAttribute('data-from');
+            acceptFriendRequest(reqId, fromUid);
+        };
+    });
+
+    container.querySelectorAll('.btn-reject-req').forEach(btn => {
+        btn.onclick = () => {
+            const reqId = btn.getAttribute('data-id');
+            rejectFriendRequest(reqId);
+        };
+    });
+}
+
+async function acceptFriendRequest(requestId, fromUid) {
+    try {
+        const db = firebase.firestore();
+        const batch = db.batch();
+
+        const reqRef = db.collection('friendRequests').doc(requestId);
+        batch.update(reqRef, { status: 'accepted', updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+
+        const myFriendRef = db.collection('members').doc(currentMemberData.uid).collection('friends').doc(fromUid);
+        batch.set(myFriendRef, { uid: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+
+        const targetFriendRef = db.collection('members').doc(fromUid).collection('friends').doc(currentMemberData.uid);
+        batch.set(targetFriendRef, { uid: currentMemberData.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+
+        await batch.commit();
+        alert('已成功新增好友！');
+        fetchFriendsList(currentMemberData.uid);
+    } catch (err) {
+        console.error('接受好友邀請失敗:', err);
+        alert('操作失敗，請重新試一次。');
+    }
+}
+
+async function rejectFriendRequest(requestId) {
+    try {
+        const db = firebase.firestore();
+        await db.collection('friendRequests').doc(requestId).update({
+            status: 'rejected',
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        alert('已拒絕好友邀請。');
+    } catch (err) {
+        console.error('拒絕好友邀請失敗:', err);
+    }
+}
+
+async function fetchFriendsList(uid) {
+    const container = document.getElementById('friends-list-container');
+    if (!container) return;
+
+    try {
+        const db = firebase.firestore();
+        const friendsSnap = await db.collection('members').doc(uid).collection('friends').get();
+
+        if (friendsSnap.empty) {
+            renderFriendsList([]);
+            return;
+        }
+
+        const friendUids = friendsSnap.docs.map(doc => doc.id);
+        const friendPromises = friendUids.map(fUid => db.collection('members').doc(fUid).get());
+        const friendDocs = await Promise.all(friendPromises);
+
+        const friendsData = friendDocs
+            .filter(doc => doc.exists)
+            .map(doc => doc.data());
+
+        renderFriendsList(friendsData);
+    } catch (err) {
+        console.error('讀取好友列表失敗:', err);
+    }
+}
+
+function renderFriendsList(friends) {
+    const container = document.getElementById('friends-list-container');
+    if (!container) return;
+
+    if (!friends || friends.length === 0) {
+        container.innerHTML = `<span style="font-size:0.85rem; color:#9ca3af; text-align:center; padding:10px;">目前尚無好友，快點擊上方「新增好友」吧！</span>`;
+        return;
+    }
+
+    // 依據 XP 排序好友
+    friends.sort((a, b) => (b.xp || 0) - (a.xp || 0));
+
+    container.innerHTML = friends.map((f, index) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:10px 14px; border-radius:12px; border:1px solid #e5e7eb;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-weight:bold; color:${index === 0 ? 'var(--duo-gold)' : '#6b7280'}; width:18px;">${index + 1}</span>
+                <img src="${f.photoURL || 'https://placehold.co/36x36'}" style="width:36px; height:36px; border-radius:50%; object-fit:cover;" />
+                <div>
+                    <div style="font-size:0.88rem; font-weight:bold; color:#1f2937;">${f.nickname || '學生'}</div>
+                    <div style="font-size:0.75rem; color:#9ca3af;">連續 ${f.streak || 1} 天</div>
+                </div>
+            </div>
+            <div style="font-size:0.88rem; font-weight:bold; color:var(--duo-gold);">
+                <i class="fa-solid fa-star"></i> ${f.xp || 0}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function fetchGlobalLeaderboard(courseLevel) {
+    const container = document.getElementById('content-rank-global');
+    const levelLbl = document.getElementById('lbl-global-rank-level');
+    if (levelLbl) levelLbl.innerText = courseLevel;
+
+    if (!container) return;
+
+    try {
+        const db = firebase.firestore();
+        const topSnap = await db.collection('members')
+            .where('lastLevel', '==', courseLevel)
+            .orderBy('xp', 'desc')
+            .limit(20)
+            .get();
+
+        if (topSnap.empty) {
+            container.innerHTML = `<p style="font-size: 0.9rem; color: #6b7280; margin: 10px 0;">該程度尚無排行紀錄</p>`;
+            return;
+        }
+
+        const topUsers = topSnap.docs.map(doc => doc.data());
+        container.innerHTML = `
+            <div style="display:flex; flex-direction:column; gap:8px; text-align:left;">
+                ${topUsers.map((u, idx) => `
+                    <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:10px 14px; border-radius:12px; border:1px solid #e5e7eb;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="font-weight:bold; color:${idx === 0 ? 'var(--duo-gold)' : '#6b7280'}; width:20px;">${idx + 1}</span>
+                            <img src="${u.photoURL || 'https://placehold.co/36x36'}" style="width:36px; height:36px; border-radius:50%; object-fit:cover;" />
+                            <span style="font-size:0.88rem; font-weight:bold; color:#1f2937;">${u.nickname || '匿名學生'}</span>
+                        </div>
+                        <span style="font-size:0.88rem; font-weight:bold; color:var(--duo-gold);"><i class="fa-solid fa-star"></i> ${u.xp || 0}</span>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    } catch (err) {
+        console.error('讀取全球排行榜失敗:', err);
+        container.innerHTML = `<p style="font-size: 0.85rem; color: var(--duo-red); margin: 10px 0;">全球排行榜載入失敗</p>`;
+    }
+}
 }
 
 // 🎯 全域安全事件綁定 Helper（加入問題 B 除錯輸出）
