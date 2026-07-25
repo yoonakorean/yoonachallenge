@@ -291,12 +291,17 @@ function listenForFriendRequests(uid) {
     const db = firebase.firestore();
     friendRequestsUnsubscribe = db.collection('friendRequests')
         .where('toUid', '==', uid)
+        .where('status', '==', 'pending')
         .onSnapshot(snapshot => {
             const badge = document.getElementById('profile-notif-badge');
+            const pendingRequests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
             if (badge) {
-                if (!snapshot.empty) badge.classList.remove('hidden');
+                if (pendingRequests.length > 0) badge.classList.remove('hidden');
                 else badge.classList.add('hidden');
             }
+
+            renderPendingFriendRequests(pendingRequests);
         }, err => {
             console.error("監聽好友邀請失敗:", err);
         });
