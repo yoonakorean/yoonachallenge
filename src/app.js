@@ -308,7 +308,9 @@ function listenForFriendRequests(uid) {
 }
 
 function renderPendingFriendRequests(requests) {
+    console.log("renderPendingFriendRequests", requests);
     const container = document.getElementById('pending-friend-requests-container');
+    console.log(container);
     if (!container) return;
 
     if (!requests || requests.length === 0) {
@@ -479,6 +481,7 @@ async function fetchGlobalLeaderboard(courseLevel) {
         container.innerHTML = `<p style="font-size: 0.85rem; color: var(--duo-red); margin: 10px 0;">全球排行榜載入失敗</p>`;
     }
 }
+
 // 🎯 全域安全事件綁定 Helper（加入問題 B 除錯輸出）
 function bindClick(elementId, handler) {
     const el = document.getElementById(elementId);
@@ -650,16 +653,17 @@ function setupEvents() {
     });
     bindClick('btn-logout-yes', async () => {
         try {
-        await firebase.auth().signOut();
-        currentUser = null;
-        currentMemberData = null;
-        userMemberships = [];
-        // 強制重新整理並清空 Session 快取
-        window.location.href = window.location.pathname; 
-    } catch (err) {
-        console.error("登出失敗:", err);
-    }
+            await firebase.auth().signOut();
+            currentUser = null;
+            currentMemberData = null;
+            userMemberships = [];
+            // 強制重新整理並清空 Session 快取
+            window.location.href = window.location.pathname; 
+        } catch (err) {
+            console.error("登出失敗:", err);
+        }
     });
+
     // 綁定發送好友邀請事件
     bindClick('btn-submit-add-friend', async () => {
         const inputEl = document.getElementById('input-friend-id');
