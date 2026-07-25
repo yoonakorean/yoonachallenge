@@ -105,6 +105,15 @@
         .profile-avatar-large { width: 72px; height: 72px; border-radius: 50%; border: 3px solid var(--duo-blue); margin: 0 auto 10px auto; object-fit: cover; }
         .course-badge-pill { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: bold; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; margin: 2px; }
 
+        /* 月曆 Dashboard CSS */
+        .calendar-header-ctrl { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: bold; color: #374151; font-size: 0.9rem; }
+        .calendar-nav-btn { background: #f3f4f6; border: none; border-radius: 8px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #4b5563; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px; text-align: center; }
+        .calendar-day-header { font-size: 0.75rem; color: #9ca3af; font-weight: bold; padding-bottom: 4px; }
+        .calendar-day { font-size: 0.85rem; padding: 8px 0; border-radius: 10px; background: #f9fafb; border: 1px solid #f3f4f6; color: #4b5563; }
+        .calendar-day.empty { background: transparent; border: none; }
+        .calendar-day.checked { background: #dcfce7; color: #15803d; font-weight: bold; border-color: #86efac; }
+
         .hidden { display: none !important; }
         input, select { width: 100%; padding: 10px 12px; margin: 6px 0; border-radius: 12px; border: 2px solid #e5e7eb; box-sizing: border-box; font-size: 0.95rem; }
     </style>
@@ -137,6 +146,40 @@
         </div>
     </div>
 
+    <!-- 打卡月曆 Dashboard Modal -->
+    <div id="modal-streak-dashboard" class="custom-modal hidden">
+        <div class="custom-modal-card">
+            <div class="close-icon-circle" id="btn-close-streak-modal"><i class="fa-solid fa-xmark"></i></div>
+            <h3 style="margin: 5px 0 15px 0; color: #1f2937;"><i class="fa-solid fa-fire" style="color: var(--duo-fire-red);"></i> 學習成就統計</h3>
+            
+            <div style="display: flex; justify-content: space-around; background: #f9fafb; padding: 12px; border-radius: 16px; margin-bottom: 15px; border: 1px solid #e5e7eb;">
+                <div>
+                    <div style="font-size: 0.75rem; color: #6b7280;">打卡天數</div>
+                    <div style="font-size: 1.2rem; font-weight: bold; color: var(--duo-fire-red);"><span id="dash-streak-days">1</span> 天</div>
+                </div>
+                <div style="border-left: 1px solid #e5e7eb;"></div>
+                <div>
+                    <div style="font-size: 0.75rem; color: #6b7280;">專注時數</div>
+                    <div style="font-size: 1.2rem; font-weight: bold; color: var(--duo-blue);"><span id="dash-focus-hours">0.0</span> 小時</div>
+                </div>
+            </div>
+
+            <div class="calendar-header-ctrl">
+                <div><i class="fa-regular fa-calendar-days" style="color: var(--duo-gold);"></i> 簽到紀錄</div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <button class="calendar-nav-btn" id="btn-cal-prev"><i class="fa-solid fa-chevron-left"></i></button>
+                    <span id="lbl-calendar-month-title">2026年 7月</span>
+                    <button class="calendar-nav-btn" id="btn-cal-next"><i class="fa-solid fa-chevron-right"></i></button>
+                </div>
+            </div>
+
+            <div class="calendar-grid">
+                <div class="calendar-day-header">日</div><div class="calendar-day-header">一</div><div class="calendar-day-header">二</div><div class="calendar-day-header">三</div><div class="calendar-day-header">四</div><div class="calendar-day-header">五</div><div class="calendar-day-header">六</div>
+                <div id="calendar-days-container" style="display: contents;"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- 切換程度 Modal -->
     <div id="modal-select-initial-level" class="custom-modal hidden">
         <div class="custom-modal-card">
@@ -157,7 +200,7 @@
         </div>
     </div>
 
-    <!-- 修改暱稱 Modal【修正處：ID 改為 input-edit-nickname 並加入 edit-nickname-error-msg】 -->
+    <!-- 修改暱稱 Modal -->
     <div id="modal-edit-nickname" class="custom-modal hidden">
         <div class="custom-modal-card">
             <h3 style="margin-top:0;">修改公開暱稱</h3>
@@ -188,9 +231,23 @@
     <div id="modal-locked" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div style="font-size: 2.8rem; color: #f59e0b; margin-bottom: 10px;"><i class="fa-solid fa-lock"></i></div>
-            <h3 style="margin: 0 0 8px 0; color: #1f2937;">關卡/課程鎖定中</h3>
-            <p id="lbl-locked-msg" style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">您尚未開通該課程或未解鎖前面關卡！</p>
+            <h3 style="margin: 0 0 8px 0; color: #1f2937;">關卡/程度鎖定中</h3>
+            <p id="lbl-locked-msg" style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">完成前面關卡，或聯繫後台管理員開通權限唷！</p>
             <button id="btn-close-locked-modal" class="btn-3d btn-3d-primary" style="width: 100%; padding: 10px;">我知道了</button>
+        </div>
+    </div>
+
+    <!-- 課前暖身詢問 Modal -->
+    <div id="modal-warmup-ask" class="custom-modal hidden">
+        <div class="custom-modal-card">
+            <div class="close-icon-circle" id="btn-close-warmup-ask"><i class="fa-solid fa-xmark"></i></div>
+            <div style="font-size: 2.5rem; color: var(--duo-blue); margin-bottom: 10px; margin-top: 10px;"><i class="fa-solid fa-book-open-reader"></i></div>
+            <h3 style="margin: 0 0 8px 0; color: #1f2937;">課前暖身</h3>
+            <p style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.9rem;">進入挑戰前，要先複習必備單字嗎？</p>
+            <div style="display: flex; gap: 10px;">
+                <button id="btn-warmup-yes" class="btn-3d btn-3d-primary" style="flex: 1; padding: 10px;">進入暖身</button>
+                <button id="btn-warmup-no" class="btn-3d btn-3d-secondary" style="flex: 1; padding: 10px;">直接挑戰</button>
+            </div>
         </div>
     </div>
 
@@ -210,22 +267,32 @@
         
         <!-- 首頁頂端資訊列 -->
         <div class="user-meta-bar">
+            <!-- 1. 個人資料與通知小紅點 -->
             <div class="user-meta-item" id="btn-profile-trigger">
                 <i class="fa-solid fa-user" style="color: var(--duo-blue); font-size: 1.05rem;"></i>
                 <span id="lbl-username">學生</span>
                 <div id="profile-notif-badge" class="notification-badge hidden"></div>
             </div>
 
-            <div class="user-meta-item">
+            <!-- 2. 連續登入天數 -->
+            <div class="user-meta-item" id="btn-streak-trigger">
                 <i class="fa-solid fa-fire" style="color: var(--duo-fire-red); font-size: 1.05rem;"></i>
                 <span id="lbl-login-days">1</span>天
             </div>
 
+            <!-- 3. 星星 / XP -->
             <div class="user-meta-item">
                 <i class="fa-solid fa-star" style="color: var(--duo-gold); font-size: 1.05rem;"></i>
                 <span id="lbl-xp">0</span>
             </div>
 
+            <!-- 4. 閃電 / 能量 -->
+            <div class="user-meta-item">
+                <i class="fa-solid fa-bolt-lightning" style="color: var(--duo-lightning); font-size: 1.05rem;"></i>
+                <span id="lbl-energy">100</span>
+            </div>
+
+            <!-- 5. 程度選擇 -->
             <div class="user-meta-item" id="btn-level-trigger">
                 <span id="lbl-user-level" style="color: var(--duo-blue);">1A</span>
                 <i class="fa-solid fa-caret-down" style="font-size: 0.75rem; color: #9ca3af;"></i>
