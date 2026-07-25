@@ -1,3 +1,210 @@
+// 🔗 Google Apps Script 白名單 API 網址
+const GAS_API_URL = "https://script.google.com/macros/s/YOUR_GAS_DEPLOYMENT_ID/exec";
+
+let currentUser = null;
+let currentMemberData = null;
+let userMemberships = [];
+let currentSelectedLevel = '1A';
+let friendRequestsUnsubscribe = null;
+
+// 暱稱驗證規範：2~12字，支援中英韓數字
+function validateNickname(nickname) {
+    const regex = /^[a-zA-Z0-9\u4e00-\u9fa5\uac00-\ud7a3]{2,12}$/;
+    return regex.test(nickname);
+}
+
+// 檢查暱稱是否在一年的冷卻期內
+function canChangeNickname(lastChangeDateStr) {
+    if (!lastChangeDateStr) return true;
+    const lastDate = new Date(lastChangeDateStr);
+    const oneYearLater = new Date(lastDate);
+    oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
+    return new Date() >= oneYearLater;
+}
+
+// 向 GAS 查詢最新 Members + Memberships 白名單
+async function fetchGASWhitelist(email) {
+    // 正式環境禁止使用預設 Deployment ID
+    if (!GAS_API_URL || GAS_API_URL.includes("YOUR_GAS_DEPLOYMENT_ID")) {
+        throw new Error("GAS_API_URL 尚未設定，請填入正式部署的 Google Apps Script Web App URL。");
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const response = await fetch(
+            `${GAS_API_URL}?email=${encodeURIComponent(email.trim().toLowerCase())}`,
+            {
+                method: "GET",
+                signal: controller.signal
+            }
+        );
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error(`GAS API HTTP Error ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (!result || typeof result !== "object") {
+            throw new Error("GAS 回傳格式錯誤");
+        }
+
+        return result;
+
+    } catch (err) {
+        console.error("讀取 GAS 白名單失敗：", err);
+        throw err;
+    }
+}
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const response = await fetch(`${GAS_API_URL}?email=${encodeURIComponent(email)}`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`GAS API 狀態碼異常: ${response.status}`);
+        return await response.json();
+    } catch (err) {
+        console.error("讀取 GAS 白名單失敗:", err);
+        return null;
+    }
+}
+
+// Google Sign-In 登入流程
+async function handleGoogleLogin() {
+    console.log("🔍 [DEBUG] 觸發 handleGoogleLogin()");
+    const errorDiv = document.getElementById('login-error-msg');
+    const loginBtn = document.getElementById('btn-google-login');
+
+    if (errorDiv) errorDiv.classList.add('hidden');
+    if (loginBtn) loginBtn.disabled = true;
+
+    try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' });
+
+        console.log("🔍 [DEBUG] 開始執行 signInWithPopup...");
+        const result = await firebase.auth().signInWithPopup(provider);
+        console.log("✅ [DEBUG] signInWithPopup 成功:", result.user);
+        const user = result.user;
+
+        // 1. 查詢 GAS 白名單
+        const gasResult = await fetchGASWhitelist(user.email);
+
+        if (
+            !gasResult ||
+            gasResult.status !== "success"
+        ) {
+            await firebase.auth().signOut();
+        
+            if (errorDiv) {
+                errorDiv.innerText =
+                    "❌ 您的帳號未開通、已停權或課程已失效，請聯絡管理員。";
+                errorDiv.classList.remove("hidden");
+            }
+        
+            return;
+        }
+        // 2. 進行 Firebase 資料同步
+        await syncUserToFirestore(user, gasResult.member, gasResult.memberships);
+
+    } catch (err) {
+        // 🎯 問題 A 關鍵偵錯：印出最真實的 Error Code 與 Message
+        console.error("❌ [DEBUG] Google 登入失敗捕獲之完整 Error 物件:", err);
+        console.error("❌ [DEBUG] Error Code:", err.code);
+        console.error("❌ [DEBUG] Error Message:", err.message);
+
+        if (errorDiv && err.code !== 'auth/popup-closed-by-user') {
+            errorDiv.innerText = `登入失敗: ${err.message}`;
+            errorDiv.classList.remove('hidden');
+        }
+    } finally {
+        if (loginBtn) loginBtn.disabled = false;
+    }
+}
+
+// Members + Memberships 資料同步
+async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
+    const db = firebase.firestore();
+    const memberRef = db.collection('members').doc(authUser.uid);
+    const docSnap = await memberRef.get();
+
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+
+    if (!docSnap.exists) {
+        const newMember = {
+            uid: authUser.uid,
+            email: authUser.email,
+            realName: gasMember.realName || "",
+            nickname: "",
+            photoURL: authUser.photoURL || "",
+            role: gasMember.role || "student",
+            status: gasMember.status || "active",
+            profileCompleted: false,
+            xp: 0,
+            streak: 0,
+            lastLoginDate: new Date().toISOString().split('T')[0],
+            lastStreakDate: "",
+            attendance: [],
+            lastCourseId: "KR",
+            lastLevel: gasMemberships[0]?.courseId || "1A",
+            lastUnit: 1,
+            lastLesson: 1,
+            lastStage: 1,
+            createdAt: now,
+            updatedAt: now
+        };
+
+        await memberRef.set(newMember);
+        currentMemberData = newMember;
+    } else {
+        const existingData = docSnap.data();
+
+        const updatedFields = {
+            realName: gasMember.realName || existingData.realName || "",
+            role: gasMember.role || existingData.role || "student",
+            status: gasMember.status || "active",
+            photoURL: authUser.photoURL || existingData.photoURL || "",
+            lastLoginDate: new Date().toISOString().split('T')[0],
+            updatedAt: now
+        };
+
+        await memberRef.update(updatedFields);
+        currentMemberData = { ...existingData, ...updatedFields };
+    }
+
+    if (Array.isArray(gasMemberships)) {
+        for (const ship of gasMemberships) {
+            const shipId = `${authUser.uid}_${ship.courseId}`;
+            await db.collection('memberships').doc(shipId).set({
+                uid: authUser.uid,
+                courseId: ship.courseId,
+                expireDate: ship.expireDate,
+                status: ship.status,
+                purchaseDate: ship.purchaseDate || new Date().toISOString().split('T')[0],
+                source: "GoogleSheets",
+                updatedAt: now
+            }, { merge: true });
+        }
+    }
+
+    const shipsSnap = await db.collection('memberships').where('uid', '==', authUser.uid).get();
+    userMemberships = shipsSnap.docs.map(doc => doc.data());
+
+    if (!currentMemberData.profileCompleted || !currentMemberData.nickname) {
+        document.getElementById('modal-setup-nickname')?.classList.remove('hidden');
+    } else {
+        launchMainApp();
+    }
+}
+
 import { AuthService } from './services/auth.js';
 import { FirestoreService } from './services/firebase.js';
 
