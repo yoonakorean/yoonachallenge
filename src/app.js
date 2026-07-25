@@ -1,4 +1,4 @@
-// 🔗 Google Apps Script 白名單 API 網址 (請填入您正式部署的 Deployment ID)
+// 🔗 Google Apps Script 白名單 API 網址
 const GAS_API_URL = "https://script.google.com/macros/s/YOUR_GAS_DEPLOYMENT_ID/exec";
 
 let currentUser = null;
@@ -22,15 +22,12 @@ function canChangeNickname(lastChangeDateStr) {
     return new Date() >= oneYearLater;
 }
 
-// 向 GAS 查詢最新 Members + Memberships 白名單 (已修正語法錯誤)
+// 向 GAS 查詢最新 Members + Memberships 白名單
+// 向 GAS 查詢最新 Members + Memberships 白名單
 async function fetchGASWhitelist(email) {
+    // 正式環境禁止使用預設 Deployment ID
     if (!GAS_API_URL || GAS_API_URL.includes("YOUR_GAS_DEPLOYMENT_ID")) {
-        console.warn("GAS_API_URL 尚未設定正式 ID，進入測試白名單模式");
-        return {
-            status: "success",
-            member: { email: email, realName: "測試學生", role: "student", status: "active" },
-            memberships: [{ courseId: "1A", expireDate: "2027-12-31", status: "active" }]
-        };
+        throw new Error("GAS_API_URL 尚未設定，請填入正式部署的 Google Apps Script Web App URL。");
     }
 
     try {
@@ -64,6 +61,22 @@ async function fetchGASWhitelist(email) {
         throw err;
     }
 }
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const response = await fetch(`${GAS_API_URL}?email=${encodeURIComponent(email)}`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`GAS API 狀態碼異常: ${response.status}`);
+        return await response.json();
+    } catch (err) {
+        console.error("讀取 GAS 白名單失敗:", err);
+        return null;
+    }
+}
 
 // Google Sign-In 登入流程
 async function handleGoogleLogin() {
@@ -86,19 +99,25 @@ async function handleGoogleLogin() {
         // 1. 查詢 GAS 白名單
         const gasResult = await fetchGASWhitelist(user.email);
 
-        if (!gasResult || gasResult.status !== "success") {
+        if (
+            !gasResult ||
+            gasResult.status !== "success"
+        ) {
             await firebase.auth().signOut();
+        
             if (errorDiv) {
-                errorDiv.innerText = "❌ 您的帳號未開通、已停權或課程已失效，請聯絡管理員。";
+                errorDiv.innerText =
+                    "❌ 您的帳號未開通、已停權或課程已失效，請聯絡管理員。";
                 errorDiv.classList.remove("hidden");
             }
+        
             return;
         }
-
         // 2. 進行 Firebase 資料同步
         await syncUserToFirestore(user, gasResult.member, gasResult.memberships);
 
     } catch (err) {
+        // 🎯 問題 A 關鍵偵錯：印出最真實的 Error Code 與 Message
         console.error("❌ [DEBUG] Google 登入失敗捕獲之完整 Error 物件:", err);
         console.error("❌ [DEBUG] Error Code:", err.code);
         console.error("❌ [DEBUG] Error Message:", err.message);
@@ -187,7 +206,7 @@ async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
     }
 }
 
-// 🎯 更新連續登入與月曆 UI
+// 🎯 更新連續登入與月曆 UI（登入時不增加 streak）
 function updateStreakUI() {
     const streakVal = currentMemberData?.streak || 0;
     const streakEl1 = document.getElementById('lbl-dash-streak');
@@ -248,6 +267,7 @@ async function checkAndApplyStreakReward() {
     const lastStreak = currentMemberData.lastStreakDate || '';
     let attendance = currentMemberData.attendance || [];
 
+    // 同一天完成多次不重複增加
     if (lastStreak === todayStr) {
         console.log('今日已計算過連續登入 streak，不重複增加。');
         return;
@@ -396,6 +416,7 @@ function renderCourseMap() {
     const userLastUnit = currentMemberData?.lastUnit || 1;
     const userLastStage = currentMemberData?.lastStage || 1;
 
+    // 依據 Unit 與 Stage 進度動態生成關卡地圖
     const unitsData = [
         { unit: 1, title: `韓語 - ${currentSelectedLevel} 基礎學習`, stages: [1, 2, 3] },
         { unit: 2, title: `韓語 - ${currentSelectedLevel} 進階應用`, stages: [1, 2, 3] }
@@ -466,7 +487,9 @@ function listenForFriendRequests(uid) {
 }
 
 function renderPendingFriendRequests(requests) {
+    console.log("renderPendingFriendRequests", requests);
     const container = document.getElementById('pending-friend-requests-container');
+    console.log(container);
     if (!container) return;
 
     if (!requests || requests.length === 0) {
@@ -577,6 +600,7 @@ function renderFriendsList(friends) {
         return;
     }
 
+    // 依據 XP 排序好友
     friends.sort((a, b) => (b.xp || 0) - (a.xp || 0));
 
     container.innerHTML = friends.map((f, index) => `
@@ -637,7 +661,7 @@ async function fetchGlobalLeaderboard(courseLevel) {
     }
 }
 
-// 🎯 全域安全事件綁定 Helper
+// 🎯 全域安全事件綁定 Helper（加入問題 B 除錯輸出）
 function bindClick(elementId, handler) {
     const el = document.getElementById(elementId);
     if (el) {
@@ -812,12 +836,14 @@ function setupEvents() {
             currentUser = null;
             currentMemberData = null;
             userMemberships = [];
+            // 強制重新整理並清空 Session 快取
             window.location.href = window.location.pathname; 
         } catch (err) {
             console.error("登出失敗:", err);
         }
     });
 
+    // 綁定發送好友邀請事件
     bindClick('btn-submit-add-friend', async () => {
         const inputEl = document.getElementById('input-friend-id');
         const friendEmail = inputEl ? inputEl.value.trim() : '';
@@ -859,6 +885,7 @@ function setupEvents() {
         }
     });
 
+    // 綁定排行榜頁籤切換事件
     bindClick('tab-leaderboard-friends', () => {
         document.getElementById('tab-leaderboard-friends')?.classList.add('active');
         document.getElementById('tab-leaderboard-global')?.classList.remove('active');
