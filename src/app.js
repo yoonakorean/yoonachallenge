@@ -355,7 +355,7 @@ function updateHomeMetaBar() {
 function updateProfileView() {
     const avatarImg = document.getElementById('profile-user-avatar');
     if (avatarImg) {
-        avatarImg.src = currentMemberData?.photoURL || "https://placehold.co/72x72/e2e8f0/475569?text=User";
+        avatarImg.src = currentMemberData?.photoURL || "https://placehold.co/72x72";
     }
 
     const lblNick = document.getElementById('profile-nickname');
