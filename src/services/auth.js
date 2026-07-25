@@ -12,6 +12,9 @@ import { saveUserData, getUserData } from "./firebase.js";
 const auth = getAuth();
 const googleProvider = new GoogleAuthProvider();
 
+// 預設頭像網址
+const DEFAULT_AVATAR = 'https://placehold.co/72x72';
+
 // 1. Google Gmail 快捷登入/註冊
 export async function loginWithGoogle() {
   try {
@@ -23,6 +26,7 @@ export async function loginWithGoogle() {
       userData = {
         email: user.email,
         displayName: user.displayName || user.email.split('@')[0],
+        photoURL: user.photoURL || DEFAULT_AVATAR, // 優先使用 Google 頭像，若無則使用預設圖
         language: 'zh-TW',
         permissions: ['0A'] // 預設權限
       };
@@ -47,6 +51,7 @@ export async function signUpWithEmail(email, password) {
   const userData = {
     email: user.email,
     displayName: user.email.split('@')[0],
+    photoURL: DEFAULT_AVATAR, // Email 註冊預設頭像
     language: 'zh-TW',
     permissions: ['0A']
   };
