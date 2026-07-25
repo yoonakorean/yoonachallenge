@@ -117,8 +117,10 @@ async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
             status: gasMember.status || "active",
             profileCompleted: false,
             xp: 0,
-            streak: 1,
+            streak: 0,
             lastLoginDate: new Date().toISOString().split('T')[0],
+            lastStreakDate: "",
+            attendance: [],
             lastCourseId: "KR",
             lastLevel: gasMemberships[0]?.courseId || "1A",
             lastUnit: 1,
@@ -132,12 +134,13 @@ async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
         currentMemberData = newMember;
     } else {
         const existingData = docSnap.data();
-        
+
         const updatedFields = {
             realName: gasMember.realName || existingData.realName || "",
             role: gasMember.role || existingData.role || "student",
             status: gasMember.status || "active",
             photoURL: authUser.photoURL || existingData.photoURL || "",
+            lastLoginDate: new Date().toISOString().split('T')[0],
             updatedAt: now
         };
 
@@ -170,6 +173,147 @@ async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
     }
 }
 
+// 🎯 更新連續登入與月曆 UI（登入時不增加 streak）
+function updateStreakUI() {
+    const streakVal = currentMemberData?.streak || 0;
+    const streakEl1 = document.getElementById('lbl-dash-streak');
+    const streakEl2 = document.getElementById('dash-streak-count');
+    const streakEl3 = document.getElementById('lbl-login-days');
+    const streakEl4 = document.getElementById('profile-streak');
+
+    if (streakEl1) streakEl1.innerText = streakVal;
+    if (streakEl2) streakEl2.innerText = streakVal;
+    if (streakEl3) streakEl3.innerText = streakVal;
+    if (streakEl4) streakEl4.innerText = streakVal;
+}
+
+function renderStreakCalendar() {
+    const container = document.getElementById('streak-calendar-days');
+    if (!container) return;
+
+    const attendance = currentMemberData?.attendance || [];
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth();
+
+    const monthTitle = document.getElementById('streak-calendar-month-year');
+    if (monthTitle) {
+        monthTitle.innerText = `${year} 年 ${month + 1} 月`;
+    }
+
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+    let html = '';
+
+    for (let i = 0; i < firstDayIndex; i++) {
+        html += `<div class="calendar-day empty"></div>`;
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const isAttended = attendance.includes(dateStr);
+        const isToday = (day === today.getDate());
+
+        html += `
+            <div class="calendar-day ${isAttended ? 'attended' : ''} ${isToday ? 'today' : ''}">
+                <span class="day-number">${day}</span>
+                ${isAttended ? '<i class="fa-solid fa-check-circle" style="color:var(--duo-green); margin-top:2px;"></i>' : ''}
+            </div>
+        `;
+    }
+
+    container.innerHTML = html;
+}
+
+// 🎯 當今日第一次完成 Warmup 或 Challenge 時，才增加 Streak 並寫入 Firestore
+async function checkAndApplyStreakReward() {
+    if (!currentMemberData || !currentMemberData.uid) return;
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const lastStreak = currentMemberData.lastStreakDate || '';
+    let attendance = currentMemberData.attendance || [];
+
+    // 同一天完成多次不重複增加
+    if (lastStreak === todayStr) {
+        console.log('今日已計算過連續登入 streak，不重複增加。');
+        return;
+    }
+
+    let newStreak = currentMemberData.streak || 0;
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    if (lastStreak === yesterdayStr) {
+        newStreak += 1;
+    } else {
+        newStreak = 1;
+    }
+
+    if (!attendance.includes(todayStr)) {
+        attendance.push(todayStr);
+    }
+
+    try {
+        const db = firebase.firestore();
+        await db.collection('members').doc(currentMemberData.uid).update({
+            streak: newStreak,
+            lastStreakDate: todayStr,
+            attendance: attendance,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        currentMemberData.streak = newStreak;
+        currentMemberData.lastStreakDate = todayStr;
+        currentMemberData.attendance = attendance;
+
+        updateStreakUI();
+        renderStreakCalendar();
+    } catch (err) {
+        console.error('更新每日打卡與 Streak 獎勵失敗:', err);
+    }
+}
+
+// 🎯 完成 Warmup 時觸發判定
+async function completeWarmupTask() {
+    if (!currentMemberData || !currentMemberData.uid) return;
+    try {
+        const db = firebase.firestore();
+        await db.collection('members').doc(currentMemberData.uid).update({
+            warmupCompleted: true,
+            xp: firebase.firestore.FieldValue.increment(10)
+        });
+        currentMemberData.xp = (currentMemberData.xp || 0) + 10;
+        currentMemberData.warmupCompleted = true;
+
+        await checkAndApplyStreakReward();
+        updateHomeMetaBar();
+    } catch (err) {
+        console.error('完成 Warmup 任務更新失敗:', err);
+    }
+}
+
+// 🎯 完成 Challenge 時觸發判定
+async function completeChallengeTask() {
+    if (!currentMemberData || !currentMemberData.uid) return;
+    try {
+        const db = firebase.firestore();
+        await db.collection('members').doc(currentMemberData.uid).update({
+            challengeCompleted: true,
+            xp: firebase.firestore.FieldValue.increment(20)
+        });
+        currentMemberData.xp = (currentMemberData.xp || 0) + 20;
+        currentMemberData.challengeCompleted = true;
+
+        await checkAndApplyStreakReward();
+        updateHomeMetaBar();
+    } catch (err) {
+        console.error('完成 Challenge 任務更新失敗:', err);
+    }
+}
+
 function launchMainApp() {
     document.getElementById('login-modal')?.classList.add('hidden');
     document.getElementById('main-app')?.classList.remove('hidden');
@@ -177,6 +321,8 @@ function launchMainApp() {
     currentSelectedLevel = currentMemberData.lastLevel || (userMemberships[0]?.courseId || '1A');
 
     updateHomeMetaBar();
+    updateStreakUI();
+    renderStreakCalendar();
     renderCourseMap();
     listenForFriendRequests(currentMemberData.uid);
 }
@@ -188,7 +334,7 @@ function updateHomeMetaBar() {
     const lblLevel = document.getElementById('lbl-user-level');
 
     if (lblName) lblName.innerText = currentMemberData?.nickname || '學生';
-    if (lblDays) lblDays.innerText = currentMemberData?.streak || 1;
+    if (lblDays) lblDays.innerText = currentMemberData?.streak || 0;
     if (lblXp) lblXp.innerText = currentMemberData?.xp || 0;
     if (lblLevel) lblLevel.innerText = currentSelectedLevel;
 }
@@ -213,7 +359,7 @@ function updateProfileView() {
     if (lblRole) lblRole.innerText = currentMemberData?.role || 'Student';
     if (lblStatus) lblStatus.innerText = currentMemberData?.status === 'active' ? '開通中' : '停權';
     if (lblXp) lblXp.innerText = currentMemberData?.xp || 0;
-    if (lblStreak) lblStreak.innerText = currentMemberData?.streak || 1;
+    if (lblStreak) lblStreak.innerText = currentMemberData?.streak || 0;
 
     const container = document.getElementById('profile-memberships-list');
     if (container) {
@@ -431,7 +577,7 @@ function renderFriendsList(friends) {
                 <img src="${f.photoURL || 'https://placehold.co/36x36'}" style="width:36px; height:36px; border-radius:50%; object-fit:cover;" />
                 <div>
                     <div style="font-size:0.88rem; font-weight:bold; color:#1f2937;">${f.nickname || '學生'}</div>
-                    <div style="font-size:0.75rem; color:#9ca3af;">連續 ${f.streak || 1} 天</div>
+                    <div style="font-size:0.75rem; color:#9ca3af;">連續 ${f.streak || 0} 天</div>
                 </div>
             </div>
             <div style="font-size:0.88rem; font-weight:bold; color:var(--duo-gold);">
