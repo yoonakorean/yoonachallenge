@@ -488,6 +488,64 @@ function setupEvents() {
         console.error("登出失敗:", err);
     }
     });
+    // 綁定發送好友邀請事件
+    bindClick('btn-submit-add-friend', async () => {
+        const inputEl = document.getElementById('input-friend-id');
+        const friendEmail = inputEl ? inputEl.value.trim() : '';
+        if (!friendEmail) {
+            alert('請輸入好友的 Email！');
+            return;
+        }
+        if (friendEmail === currentMemberData.email) {
+            alert('不能新增自己為好友！');
+            return;
+        }
+
+        try {
+            const db = firebase.firestore();
+            const targetSnap = await db.collection('members').where('email', '==', friendEmail).get();
+            if (targetSnap.empty) {
+                alert('找不到該 Email 的使用者！');
+                return;
+            }
+
+            const targetUserDoc = targetSnap.docs[0];
+            const targetUserData = targetUserDoc.data();
+
+            await db.collection('friendRequests').add({
+                fromUid: currentMemberData.uid,
+                fromEmail: currentMemberData.email,
+                fromNickname: currentMemberData.nickname || '學生',
+                toUid: targetUserData.uid,
+                status: 'pending',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            alert('好友邀請已成功發送！');
+            if (inputEl) inputEl.value = '';
+            document.getElementById('modal-add-friend')?.classList.add('hidden');
+        } catch (err) {
+            console.error('發送好友邀請失敗:', err);
+            alert('發送好友邀請失敗，請稍後再試。');
+        }
+    });
+
+    // 綁定排行榜頁籤切換事件
+    bindClick('tab-leaderboard-friends', () => {
+        document.getElementById('tab-leaderboard-friends')?.classList.add('active');
+        document.getElementById('tab-leaderboard-global')?.classList.remove('active');
+        document.getElementById('content-rank-friends')?.classList.remove('hidden');
+        document.getElementById('content-rank-global')?.classList.add('hidden');
+        fetchFriendsList(currentMemberData.uid);
+    });
+
+    bindClick('tab-leaderboard-global', () => {
+        document.getElementById('tab-leaderboard-global')?.classList.add('active');
+        document.getElementById('tab-leaderboard-friends')?.classList.remove('active');
+        document.getElementById('content-rank-global')?.classList.remove('hidden');
+        document.getElementById('content-rank-friends')?.classList.add('hidden');
+        fetchGlobalLeaderboard(currentSelectedLevel);
+    });
 }
 
 firebase.auth().onAuthStateChanged(async (user) => {
