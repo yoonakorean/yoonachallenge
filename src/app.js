@@ -1,506 +1,308 @@
-import { AuthService } from './services/auth.js';
-import { FirestoreService } from './services/firebase.js';
+// 🔗 Google Apps Script 白名單 API 網址 (請填入您部署完成的 Web App URL)
+const GAS_API_URL = "https://script.google.com/macros/s/YOUR_GAS_DEPLOYMENT_ID/exec";
 
-let authMode = 'login'; 
-let currentCategory = 'korean';
+let currentUser = null;
+let currentMemberData = null;
+let userMemberships = [];
 let currentSelectedLevel = '1A';
-let currentSelectedUnit = 1;
-let currentUserData = null;
-let currentCalendarDate = new Date();
+let friendRequestsUnsubscribe = null;
 
-// 教材課程對照庫
-const MULTI_LANG_COURSES = {
-    'korean': {
-        '0A': [{ id: 1, title: '單元 1：母音 기초', requiredWords: [] }],
-        '1A': [
-            { id: 1, title: '單元 1：有 / 沒有 (있다/없다)', requiredWords: [{ wordId: 'k_101', word: '책', meaning: '書本' }] },
-            { id: 2, title: '單元 2：數量詞 (개/명)', requiredWords: [] }
-        ],
-        '1B': [{ id: 1, title: '單元 1：日常動詞與時態', requiredWords: [] }]
-    }
-};
-
-/**
- * 📱 3. 計算與更新連續登入天數 (Streak)
- */
-function checkAndUpdateStreak(userData) {
-    const today = new Date().toISOString().split('T')[0];
-    let streak = userData.streak || 1;
-    const lastLogin = userData.lastLoginDate || '';
-
-    if (lastLogin) {
-        const lastDate = new Date(lastLogin);
-        const currentDate = new Date(today);
-        const diffTime = Math.abs(currentDate - lastDate);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (diffDays === 1) {
-            streak += 1; // 連續登入加 1 天
-        } else if (diffDays > 1) {
-            streak = 1;  // 中斷則重置為 1 天
-        }
-    }
-
-    return { streak, lastLoginDate: today };
+// 暱稱驗證規範：2~12字，支援中英韓數字
+function validateNickname(nickname) {
+    const regex = /^[a-zA-Z0-9\u4e00-\u9fa5\uac00-\ud7a3]{2,12}$/;
+    return regex.test(nickname);
 }
 
-/**
- * 🗺️ 動態渲染學習地圖
- */
-function renderMapUnits(category, level) {
+// 向 GAS 查詢最新 Members + Memberships 白名單
+async function fetchGASWhitelist(email) {
+    if (!GAS_API_URL || GAS_API_URL.includes("YOUR_GAS_DEPLOYMENT_ID")) {
+        console.warn("GAS_API_URL 未設定，進入本機開發測試模式");
+        return {
+            status: "success",
+            member: { email: email, realName: "測試學生", role: "student", status: "active" },
+            memberships: [{ courseId: "1A", expireDate: "2027-12-31", status: "active" }]
+        };
+    }
+
+    try {
+        const response = await fetch(`${GAS_API_URL}?email=${encodeURIComponent(email)}`);
+        return await response.json();
+    } catch (err) {
+        console.error("讀取 GAS 白名單失敗:", err);
+        return null;
+    }
+}
+
+// Google Sign-In 登入流程
+async function handleGoogleLogin() {
+    const errorDiv = document.getElementById('login-error-msg');
+    errorDiv?.classList.add('hidden');
+
+    try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        const result = await firebase.auth().signInWithPopup(provider);
+        const user = result.user;
+
+        // 1. 查詢 GAS 白名單
+        const gasResult = await fetchGASWhitelist(user.email);
+
+        if (!gasResult || gasResult.status !== "success") {
+            await firebase.auth().signOut();
+            errorDiv.innerText = "❌ 存取被拒絕：您的 Email 未開通白名單權限或已被停權！";
+            errorDiv.classList.remove('hidden');
+            return;
+        }
+
+        // 2. 進行 Firebase 資料庫 Migration 與同步
+        await syncUserToFirestore(user, gasResult.member, gasResult.memberships);
+
+    } catch (err) {
+        console.error("Google 登入失敗:", err);
+        errorDiv.innerText = `登入失敗: ${err.message}`;
+        errorDiv.classList.remove('hidden');
+    }
+}
+
+// 🗄️ Members + Memberships Collection 平滑 Migration 機制
+async function syncUserToFirestore(authUser, gasMember, gasMemberships) {
+    const db = firebase.firestore();
+    const memberRef = db.collection('members').doc(authUser.uid);
+    const docSnap = await memberRef.get();
+
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+
+    if (!docSnap.exists()) {
+        // 第一次登入：建立 Member 基本檔案 (profileCompleted = false)
+        const newMember = {
+            uid: authUser.uid,
+            email: authUser.email,
+            realName: gasMember.realName || "",
+            nickname: "", // 留空，待引導彈窗輸入
+            photoURL: authUser.photoURL || "",
+            role: gasMember.role || "student",
+            status: gasMember.status || "active",
+            profileCompleted: false,
+            xp: 0,
+            streak: 1,
+            lastLoginDate: new Date().toISOString().split('T')[0],
+            // 📍 預留首頁自動定位欄位
+            lastCourseId: "korean",
+            lastLevel: gasMemberships[0]?.courseId || "1A",
+            lastUnit: 1,
+            lastLesson: 1,
+            lastStage: 1,
+            createdAt: now,
+            updatedAt: now
+        };
+
+        await memberRef.set(newMember);
+        currentMemberData = newMember;
+    } else {
+        // 舊帳號 Migration 升級相容：只更新允許的欄位，保留既有 XP、streak 與暱稱
+        const existingData = docSnap.data();
+        
+        const updatedFields = {
+            realName: gasMember.realName || existingData.realName || "",
+            role: gasMember.role || existingData.role || "student",
+            status: gasMember.status || "active",
+            photoURL: authUser.photoURL || existingData.photoURL || "",
+            updatedAt: now
+        };
+
+        await memberRef.update(updatedFields);
+        currentMemberData = { ...existingData, ...updatedFields };
+    }
+
+    // 同步更新獨立的 memberships Collection (每筆為 {uid}_{courseId})
+    for (const ship of gasMemberships) {
+        const shipId = `${authUser.uid}_${ship.courseId}`;
+        await db.collection('memberships').doc(shipId).set({
+            uid: authUser.uid,
+            courseId: ship.courseId,
+            expireDate: ship.expireDate,
+            status: ship.status,
+            purchaseDate: ship.purchaseDate || new Date().toISOString().split('T')[0],
+            source: "GoogleSheets",
+            updatedAt: now
+        }, { merge: true });
+    }
+
+    // 讀取該使用者的所有 Memberships
+    const shipsSnap = await db.collection('memberships').where('uid', '==', authUser.uid).get();
+    userMemberships = shipsSnap.docs.map(doc => doc.data());
+
+    // 檢查是否需跳出首次暱稱設定引導
+    if (!currentMemberData.profileCompleted || !currentMemberData.nickname) {
+        document.getElementById('modal-setup-nickname')?.classList.remove('hidden');
+    } else {
+        launchMainApp();
+    }
+}
+
+function launchMainApp() {
+    document.getElementById('login-modal')?.classList.add('hidden');
+    document.getElementById('main-app')?.classList.remove('hidden');
+
+    // 自動定位上次學習關卡
+    currentSelectedLevel = currentMemberData.lastLevel || (userMemberships[0]?.courseId || '1A');
+
+    updateHomeMetaBar();
+    renderCourseMap();
+    listenForFriendRequests(currentMemberData.uid);
+}
+
+// 🏠 更新首頁頂端資訊列（嚴格僅顯示：nickname, streak, xp, level）
+function updateHomeMetaBar() {
+    document.getElementById('lbl-username').innerText = currentMemberData.nickname || '學生';
+    document.getElementById('lbl-login-days').innerText = currentMemberData.streak || 1;
+    document.getElementById('lbl-xp').innerText = currentMemberData.xp || 0;
+    document.getElementById('lbl-user-level').innerText = currentSelectedLevel;
+}
+
+// 👤 更新 Profile（我的帳號）詳細資料頁面
+function updateProfileView() {
+    document.getElementById('profile-user-avatar').src = currentMemberData.photoURL || "https://via.placeholder.com/72";
+    document.getElementById('profile-nickname').innerText = currentMemberData.nickname || '學生';
+    document.getElementById('profile-email').innerText = currentMemberData.email || '';
+    document.getElementById('profile-realname').innerText = currentMemberData.realName || '-';
+    document.getElementById('profile-role').innerText = currentMemberData.role || 'Student';
+    document.getElementById('profile-status').innerText = currentMemberData.status === 'active' ? '開通中' : '停權';
+
+    document.getElementById('profile-xp').innerText = currentMemberData.xp || 0;
+    document.getElementById('profile-streak').innerText = currentMemberData.streak || 1;
+
+    // 渲染 memberships Collection 開通清單
+    const container = document.getElementById('profile-memberships-list');
+    if (container) {
+        if (userMemberships.length === 0) {
+            container.innerHTML = `<span style="font-size:0.82rem; color:#9ca3af;">無有效課程紀錄</span>`;
+        } else {
+            container.innerHTML = userMemberships.map(m => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#f9fafb; padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb;">
+                    <span class="course-badge-pill">${m.courseId} 課程</span>
+                    <span style="font-size:0.8rem; color:#4b5563;">到期日: <strong>${m.expireDate}</strong></span>
+                </div>
+            `).join('');
+        }
+    }
+}
+
+function renderCourseMap() {
     const container = document.getElementById('units-map-list');
     if (!container) return;
 
-    const categoryData = MULTI_LANG_COURSES[category] || {};
-    const units = categoryData[level] || [
-        { id: 1, title: `單元 1：${level} 基礎課程`, requiredWords: [] }
-    ];
-
-    container.innerHTML = units.map(unit => `
+    // 依據 lastUnit 進行畫面呈現
+    container.innerHTML = `
         <div class="unit-card">
             <div class="unit-header">
-                <div class="unit-title"><i class="fa-solid fa-map-location-dot" style="color: var(--duo-blue);"></i> ${unit.title}</div>
+                <div class="unit-title"><i class="fa-solid fa-map-location-dot" style="color: var(--duo-blue);"></i> 韓語 - ${currentSelectedLevel} 學習關卡</div>
             </div>
             <div class="stages-path">
-                <button class="stage-btn-3d" data-unit="${unit.id}" data-stage="1"><i class="fa-solid fa-star"></i> 階段 1</button>
-                <button class="stage-btn-3d locked" data-unit="${unit.id}" data-stage="2"><i class="fa-solid fa-lock"></i> 階段 2</button>
-                <button class="stage-btn-3d locked" data-unit="${unit.id}" data-stage="3"><i class="fa-solid fa-lock"></i> 階段 3</button>
+                <button class="stage-btn-3d" data-unit="1" data-stage="1"><i class="fa-solid fa-star"></i> 階段 1</button>
+                <button class="stage-btn-3d locked" data-unit="1" data-stage="2"><i class="fa-solid fa-lock"></i> 階段 2</button>
             </div>
         </div>
-    `).join('');
-
-    bindMapStageButtons();
+    `;
 }
 
-function bindMapStageButtons() {
-    const modalLocked = document.getElementById('modal-locked');
-    const modalWarmupAsk = document.getElementById('modal-warmup-ask');
+function listenForFriendRequests(uid) {
+    if (friendRequestsUnsubscribe) friendRequestsUnsubscribe();
 
-    document.querySelectorAll('.stage-btn-3d').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const target = e.currentTarget;
-            currentSelectedUnit = target.getAttribute('data-unit');
-            const isLocked = target.classList.contains('locked');
-
-            if (isLocked) {
-                const msgLbl = document.getElementById('lbl-locked-msg');
-                if (msgLbl) msgLbl.innerText = "完成前面關卡，或聯繫後台管理員開通權限唷！";
-                modalLocked?.classList.remove('hidden');
-            } else {
-                modalWarmupAsk?.classList.remove('hidden');
-            }
+    const db = firebase.firestore();
+    friendRequestsUnsubscribe = db.collection('friendRequests')
+        .where('toUid', '==', uid)
+        .onSnapshot(snapshot => {
+            const badge = document.getElementById('profile-notif-badge');
+            if (!snapshot.empty) badge?.classList.remove('hidden');
+            else badge?.classList.add('hidden');
         });
-    });
 }
 
-function updateUIProfile(data) {
-    currentUserData = data;
-    
-    // 更新頂部 Bar (📱 2. 同一行資訊)
-    const lblUsername = document.getElementById('lbl-username');
-    if (lblUsername) lblUsername.innerText = data.nickname || '學生';
+function setupEvents() {
+    document.getElementById('btn-google-login').onclick = handleGoogleLogin;
 
-    const lblLoginDays = document.getElementById('lbl-login-days');
-    if (lblLoginDays) lblLoginDays.innerText = data.streak || 1;
+    // 首次暱稱設定送出
+    document.getElementById('btn-save-initial-nickname').onclick = async () => {
+        const input = document.getElementById('input-setup-nickname').value.trim();
+        const errDiv = document.getElementById('nickname-error-msg');
 
-    const lblDashStreak = document.getElementById('dash-streak-days');
-    if (lblDashStreak) lblDashStreak.innerText = data.streak || 1;
-
-    const lblFocusHours = document.getElementById('dash-focus-hours');
-    if (lblFocusHours) lblFocusHours.innerText = (data.focusHours || 0.0).toFixed(1);
-
-    const lblUserLevel = document.getElementById('lbl-user-level');
-    if (lblUserLevel) lblUserLevel.innerText = data.allowedLevel || '1A';
-
-    const lblCoins = document.getElementById('lbl-coins');
-    if (lblCoins) lblCoins.innerText = data.coins || 0;
-
-    const lblXp = document.getElementById('lbl-xp');
-    if (lblXp) lblXp.innerText = data.xp || 0;
-
-    const lblEnergy = document.getElementById('lbl-energy');
-    if (lblEnergy) lblEnergy.innerText = data.energy !== undefined ? data.energy : 100;
-
-    // 更新個人檔案頁面
-    const profNick = document.getElementById('profile-nickname');
-    if (profNick) profNick.innerText = data.nickname || '學生';
-
-    const profEmail = document.getElementById('profile-email');
-    if (profEmail) profEmail.innerText = data.email || '';
-
-    const profLevel = document.getElementById('profile-allowed-level');
-    if (profLevel) profLevel.innerText = data.allowedLevel || '1A';
-
-    const profExpire = document.getElementById('profile-expire-date');
-    if (profExpire) profExpire.innerText = data.expireAt || '未定';
-
-    const profCoins = document.getElementById('profile-coins');
-    if (profCoins) profCoins.innerText = data.coins || 0;
-
-    const profXp = document.getElementById('profile-xp');
-    if (profXp) profXp.innerText = data.xp || 0;
-
-    const profStreak = document.getElementById('profile-streak');
-    if (profStreak) profStreak.innerText = data.streak || 1;
-
-    // 設定程度選單
-    const levelSelect = document.getElementById('select-level-course');
-    if (levelSelect) levelSelect.value = data.allowedLevel || '1A';
-}
-
-/**
- * 📅 渲染簽到月曆 (Dashboard)
- */
-function renderCalendar(date) {
-    const calendarDaysContainer = document.getElementById('calendar-days-container');
-    if (!calendarDaysContainer) return;
-    calendarDaysContainer.innerHTML = '';
-
-    const year = date.getFullYear();
-    const month = date.getMonth();
-    
-    const titleLbl = document.getElementById('lbl-calendar-month-title');
-    if (titleLbl) titleLbl.textContent = `${year}年 ${month + 1}月`;
-
-    const firstDay = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-    for (let i = 0; i < firstDay; i++) {
-        const emptyCell = document.createElement('div');
-        emptyCell.className = 'calendar-day empty';
-        calendarDaysContainer.appendChild(emptyCell);
-    }
-
-    const attendance = currentUserData?.attendance || [];
-
-    for (let day = 1; day <= daysInMonth; day++) {
-        const dayCell = document.createElement('div');
-        dayCell.className = 'calendar-day';
-        dayCell.textContent = day;
-
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        if (attendance.includes(dateStr)) {
-            dayCell.classList.add('checked');
+        if (!validateNickname(input)) {
+            errDiv.innerText = "❌ 暱稱需為 2~12 字，僅能包含中文、英文、韓文及數字！";
+            errDiv.classList.remove('hidden');
+            return;
         }
 
-        calendarDaysContainer.appendChild(dayCell);
-    }
-}
-
-function setupNavigationAndModals() {
-    const mapView = document.getElementById('map-view');
-    const profileView = document.getElementById('profile-view');
-    const gameView = document.getElementById('game-view');
-
-    const modalLocked = document.getElementById('modal-locked');
-    const modalWarmupAsk = document.getElementById('modal-warmup-ask');
-    const modalLogoutConfirm = document.getElementById('modal-logout-confirm');
-    const modalStreakDashboard = document.getElementById('modal-streak-dashboard');
-
-    // 打卡 Dashboard 觸發與導覽
-    const btnStreakTrigger = document.getElementById('btn-streak-trigger');
-    const btnCloseStreakModal = document.getElementById('btn-close-streak-modal');
-    const btnCalPrev = document.getElementById('btn-cal-prev');
-    const btnCalNext = document.getElementById('btn-cal-next');
-
-    if (btnStreakTrigger && modalStreakDashboard) {
-        btnStreakTrigger.addEventListener('click', () => {
-            modalStreakDashboard.classList.remove('hidden');
-            renderCalendar(currentCalendarDate);
-        });
-    }
-
-    if (btnCloseStreakModal && modalStreakDashboard) {
-        btnCloseStreakModal.addEventListener('click', () => {
-            modalStreakDashboard.classList.add('hidden');
-        });
-    }
-
-    if (btnCalPrev) {
-        btnCalPrev.addEventListener('click', () => {
-            currentCalendarDate.setMonth(currentCalendarDate.getMonth() - 1);
-            renderCalendar(currentCalendarDate);
-        });
-    }
-
-    if (btnCalNext) {
-        btnCalNext.addEventListener('click', () => {
-            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + 1);
-            renderCalendar(currentCalendarDate);
-        });
-    }
-
-    // 程度觸發彈窗按鈕
-    const btnLevelTrigger = document.getElementById('btn-level-trigger');
-    const modalLevel = document.getElementById('modal-select-initial-level');
-    const btnCloseLevel = document.getElementById('btn-close-level-modal');
-    if (btnLevelTrigger && modalLevel) {
-        btnLevelTrigger.addEventListener('click', () => {
-            modalLevel.classList.remove('hidden');
-        });
-    }
-    if (btnCloseLevel && modalLevel) {
-        btnCloseLevel.addEventListener('click', () => {
-            modalLevel.classList.add('hidden');
-        });
-    }
-
-    // 🔒 程度切換檢查：選取的程度若高於會員 allowedLevel 則鎖定
-    document.getElementById('select-level-course')?.addEventListener('change', (e) => {
-        const selected = e.target.value;
-        const allowed = currentUserData?.allowedLevel || '1A';
-
-        if (selected > allowed) {
-            const msgLbl = document.getElementById('lbl-locked-msg');
-            if (msgLbl) msgLbl.innerText = `您的帳號目前權限為 ${allowed}，無法存取 ${selected} 程度。如需開通請聯繫後台管理員！`;
-            modalLocked?.classList.remove('hidden');
-            e.target.value = currentSelectedLevel; // 重置回原程度
-        } else {
-            currentSelectedLevel = selected;
-            renderMapUnits(currentCategory, currentSelectedLevel);
+        const db = firebase.firestore();
+        // 檢查暱稱唯一性
+        const existing = await db.collection('members').where('nickname', '==', input).get();
+        if (!existing.empty) {
+            errDiv.innerText = "❌ 此暱稱已被其他人使用，請換一個！";
+            errDiv.classList.remove('hidden');
+            return;
         }
-    });
-
-    // 📱 修改暱稱 (一年限制)
-    const modalEditNickname = document.getElementById('modal-edit-nickname');
-    document.getElementById('btn-open-edit-nickname')?.addEventListener('click', () => {
-        const lastChange = currentUserData?.lastNicknameChange;
-        if (lastChange) {
-            const lastDate = new Date(lastChange);
-            const now = new Date();
-            const diffDays = Math.ceil((now - lastDate) / (1000 * 60 * 60 * 24));
-            if (diffDays < 365) {
-                alert(`一年內僅能修改一次暱稱！距離下次可修改還有 ${365 - diffDays} 天。`);
-                return;
-            }
-        }
-        modalEditNickname?.classList.remove('hidden');
-    });
-
-    document.getElementById('btn-cancel-nickname')?.addEventListener('click', () => {
-        modalEditNickname?.classList.add('hidden');
-    });
-
-    document.getElementById('btn-save-nickname')?.addEventListener('click', async () => {
-        const newNick = document.getElementById('input-edit-nickname')?.value.trim();
-        if (!newNick) return alert("請輸入有效暱稱！");
 
         const today = new Date().toISOString().split('T')[0];
-        await FirestoreService.updateUserData(currentUserData.uid, {
-            nickname: newNick,
+        await db.collection('members').doc(currentMemberData.uid).update({
+            nickname: input,
+            profileCompleted: true,
             lastNicknameChange: today
         });
 
-        currentUserData.nickname = newNick;
-        currentUserData.lastNicknameChange = today;
-        updateUIProfile(currentUserData);
-        modalEditNickname?.classList.add('hidden');
-        alert("暱稱修改成功！");
-    });
+        currentMemberData.nickname = input;
+        currentMemberData.profileCompleted = true;
 
-    // 🔑 修改密碼功能
-    const modalChangePassword = document.getElementById('modal-change-password');
-    document.getElementById('btn-open-change-password')?.addEventListener('click', () => {
-        modalChangePassword?.classList.remove('hidden');
-    });
+        document.getElementById('modal-setup-nickname')?.classList.add('hidden');
+        launchMainApp();
+    };
 
-    document.getElementById('btn-cancel-password')?.addEventListener('click', () => {
-        modalChangePassword?.classList.add('hidden');
-    });
+    // 頁面導覽
+    document.getElementById('btn-profile-trigger').onclick = () => {
+        document.getElementById('map-view')?.classList.add('hidden');
+        document.getElementById('profile-view')?.classList.remove('hidden');
+        updateProfileView();
+    };
 
-    document.getElementById('btn-save-password')?.addEventListener('click', async () => {
-        const newPass = document.getElementById('input-new-password')?.value.trim();
-        if (!newPass || newPass.length < 6) return alert("密碼至少需為 6 位數！");
+    document.getElementById('btn-profile-back-map').onclick = () => {
+        document.getElementById('profile-view')?.classList.add('hidden');
+        document.getElementById('map-view')?.classList.remove('hidden');
+    };
 
-        try {
-            await AuthService.updatePassword(newPass);
-            alert("密碼修改成功！下次登入請使用新密碼。");
-            modalChangePassword?.classList.add('hidden');
-        } catch (err) {
-            alert(`修改密碼失敗: ${err.message}`);
-        }
-    });
+    document.getElementById('btn-view-leaderboard').onclick = () => {
+        document.getElementById('btn-view-leaderboard').classList.add('active');
+        document.getElementById('btn-view-profile').classList.remove('active');
+        document.getElementById('sub-page-leaderboard').classList.remove('hidden');
+        document.getElementById('sub-page-profile').classList.add('hidden');
+    };
 
-    // 視圖切換事件
-    document.getElementById('btn-profile-trigger')?.addEventListener('click', () => {
-        mapView?.classList.add('hidden');
-        gameView?.classList.add('hidden');
-        profileView?.classList.remove('hidden');
-    });
+    document.getElementById('btn-view-profile').onclick = () => {
+        document.getElementById('btn-view-profile').classList.add('active');
+        document.getElementById('btn-view-leaderboard').classList.remove('active');
+        document.getElementById('sub-page-profile').classList.remove('hidden');
+        document.getElementById('sub-page-leaderboard').classList.add('hidden');
+        updateProfileView();
+    };
 
-    document.getElementById('btn-profile-back-map')?.addEventListener('click', () => {
-        profileView?.classList.add('hidden');
-        mapView?.classList.remove('hidden');
-    });
-
-    document.getElementById('btn-close-locked-modal')?.addEventListener('click', () => {
-        modalLocked?.classList.add('hidden');
-    });
-
-    // 課前暖身 Modal 控制
-    const btnCloseWarmupAsk = document.getElementById('btn-close-warmup-ask');
-    const btnWarmupYes = document.getElementById('btn-warmup-yes');
-    const btnWarmupNo = document.getElementById('btn-warmup-no');
-
-    if (btnCloseWarmupAsk && modalWarmupAsk) {
-        btnCloseWarmupAsk.addEventListener('click', () => {
-            modalWarmupAsk.classList.add('hidden');
-        });
-    }
-
-    if (btnWarmupYes && modalWarmupAsk) {
-        btnWarmupYes.addEventListener('click', () => {
-            modalWarmupAsk.classList.add('hidden');
-            alert("即將進入 Step 2 課前暖身頁面！");
-        });
-    }
-
-    if (btnWarmupNo && modalWarmupAsk) {
-        btnWarmupNo.addEventListener('click', () => {
-            modalWarmupAsk.classList.add('hidden');
-            if (gameView && mapView) {
-                mapView.classList.add('hidden');
-                gameView.classList.remove('hidden');
-            }
-        });
-    }
-
-    document.getElementById('btn-back-to-map')?.addEventListener('click', () => {
-        gameView?.classList.add('hidden');
-        mapView?.classList.remove('hidden');
-    });
-
-    document.getElementById('btn-trigger-logout')?.addEventListener('click', () => {
-        modalLogoutConfirm?.classList.remove('hidden');
-    });
-
-    document.getElementById('btn-logout-no')?.addEventListener('click', () => {
-        modalLogoutConfirm?.classList.add('hidden');
-    });
-
-    document.getElementById('btn-logout-yes')?.addEventListener('click', async () => {
-        modalLogoutConfirm?.classList.add('hidden');
-        await AuthService.logout();
-    });
-
-    renderMapUnits(currentCategory, currentSelectedLevel);
+    // 登出
+    document.getElementById('btn-trigger-logout').onclick = () => {
+        document.getElementById('modal-logout-confirm')?.classList.remove('hidden');
+    };
+    document.getElementById('btn-logout-no').onclick = () => {
+        document.getElementById('modal-logout-confirm')?.classList.add('hidden');
+    };
+    document.getElementById('btn-logout-yes').onclick = async () => {
+        await firebase.auth().signOut();
+        location.reload();
+    };
 }
 
-function setupAuthEventListeners() {
-    const tabLogin = document.getElementById('tab-login');
-    const tabRegister = document.getElementById('tab-register');
-    const registerFields = document.getElementById('register-extended-fields');
-    const btnSubmit = document.getElementById('btn-auth-submit');
-    const loginModal = document.getElementById('login-modal');
-    const mainApp = document.getElementById('main-app');
+// 啟動系統
+firebase.auth().onAuthStateChanged(user => {
+    if (user) {
+        currentUser = user;
+    } else {
+        document.getElementById('login-modal')?.classList.remove('hidden');
+        document.getElementById('main-app')?.classList.add('hidden');
+    }
+});
 
-    tabLogin?.addEventListener('click', () => {
-        authMode = 'login';
-        tabLogin.style.fontWeight = 'bold';
-        tabLogin.style.borderBottom = '2px solid var(--duo-blue)';
-        tabRegister.style.fontWeight = 'normal';
-        tabRegister.style.borderBottom = 'none';
-        registerFields?.classList.add('hidden');
-    });
-
-    tabRegister?.addEventListener('click', () => {
-        authMode = 'register';
-        tabRegister.style.fontWeight = 'bold';
-        tabRegister.style.borderBottom = '2px solid var(--duo-blue)';
-        tabLogin.style.fontWeight = 'normal';
-        tabLogin.style.borderBottom = 'none';
-        registerFields?.classList.remove('hidden');
-    });
-
-    btnSubmit?.addEventListener('click', async () => {
-        const email = document.getElementById('email-input')?.value.trim();
-        const password = document.getElementById('password-input')?.value.trim();
-
-        if (!email || !password) return alert("請輸入電子信箱與密碼！");
-
-        try {
-            btnSubmit.disabled = true;
-            if (authMode === 'login') {
-                await AuthService.login(email, password);
-            } else {
-                const nickname = document.getElementById('nickname-input')?.value.trim();
-                if (!nickname) return alert("請輸入暱稱！");
-                await AuthService.register(email, password, { nickname });
-            }
-        } catch (err) {
-            alert(`驗證失敗: ${err.message}`);
-        } finally {
-            btnSubmit.disabled = false;
-        }
-    });
-
-    AuthService.onAuthStateChanged(async (user) => {
-        if (user) {
-            loginModal?.classList.add('hidden');
-
-            // 讀取會員 Firestore 資料
-            let userData = await FirestoreService.getUserData(user.uid);
-
-            // 👑 檢查帳號到期日
-            const today = new Date().toISOString().split('T')[0];
-            if (userData && userData.expireAt && userData.expireAt < today) {
-                alert("您的帳號使用期限已到期！學習紀錄已保存，請聯繫後台管理員重新開通。");
-                await AuthService.logout();
-                return;
-            }
-
-            // 🌟 首次登入選取程度處理
-            if (!userData || !userData.allowedLevel) {
-                document.getElementById('modal-select-initial-level')?.classList.remove('hidden');
-                
-                const btnConfirm = document.getElementById('btn-confirm-initial-level');
-                if (btnConfirm) {
-                    btnConfirm.onclick = async () => {
-                        const selectedLevel = document.getElementById('initial-level-select')?.value || '1A';
-                        const streakData = checkAndUpdateStreak(userData || {});
-                        
-                        const newUserData = {
-                            uid: user.uid,
-                            email: user.email,
-                            nickname: userData?.nickname || user.email.split('@')[0],
-                            allowedLevel: selectedLevel,
-                            xp: 0,
-                            coins: 0,
-                            energy: 100,
-                            expireAt: '2026-12-31', // 預設到期日
-                            ...streakData
-                        };
-
-                        await FirestoreService.saveUserData(user.uid, newUserData);
-                        document.getElementById('modal-select-initial-level')?.classList.add('hidden');
-                        
-                        mainApp?.classList.remove('hidden');
-                        updateUIProfile(newUserData);
-                        renderMapUnits(currentCategory, selectedLevel);
-                    };
-                }
-            } else {
-                // 已存在程度資料，更新連續登入紀錄
-                const streakData = checkAndUpdateStreak(userData);
-                await FirestoreService.updateUserData(user.uid, streakData);
-                userData = { ...userData, ...streakData };
-
-                mainApp?.classList.remove('hidden');
-                currentSelectedLevel = userData.allowedLevel;
-                updateUIProfile(userData);
-                renderMapUnits(currentCategory, currentSelectedLevel);
-            }
-
-        } else {
-            loginModal?.classList.remove('hidden');
-            mainApp?.classList.add('hidden');
-        }
-    });
-}
-
-export function initApp() {
-    setupAuthEventListeners();
-    setupNavigationAndModals();
-}
-
-initApp();
+setupEvents();
