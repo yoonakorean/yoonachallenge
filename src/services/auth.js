@@ -15,7 +15,7 @@ const auth = getAuth();
 const googleProvider = new GoogleAuthProvider();
 
 // 預設頭像網址
-const DEFAULT_AVATAR = 'https://placehold.co/72x72';
+const DEFAULT_AVATAR = 'https://lh3.googleusercontent.com/a/default-user';
 
 // 1. Google Gmail 快捷登入/註冊（原始函式，保留不變，供舊流程相容）
 export async function loginWithGoogle() {
