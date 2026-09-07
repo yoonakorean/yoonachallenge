@@ -20,20 +20,219 @@ let currentFriendUids = [];
 let pendingUnsub = null;
 let friendsUnsub = null;
 
-// 教材課程對照庫
-const MULTI_LANG_COURSES = {
-    'korean': {
-        '0A': [{ id: 1, title: '單元 1：母音 기초', requiredWords: [] }],
-        '1A': [
-            { id: 1, title: '單元 1：有 / 沒有 (있다/없다)', requiredWords: [{ wordId: 'k_101', word: '책', meaning: '書本' }] },
-            { id: 2, title: '單元 2：數量詞 (개/명)', requiredWords: [] }
-        ],
-        '1B': [{ id: 1, title: '單元 1：日常動詞與時態', requiredWords: [] }]
-    }
-};
-
 // 問題五：統一預設頭像網址（無 Google 頭像／Email 註冊時使用）
 const DEFAULT_AVATAR_URL = 'https://lh3.googleusercontent.com/a/default-user';
+
+/* =========================================================
+ * 多語系語言清單（可擴充，不寫死在畫面上）
+ * 新增語言：這裡加一筆＋Sheets 對應表格加一個 _語言代碼 欄位即可
+ * ========================================================= */
+const LANGUAGE_REGISTRY = [
+    { code: 'zh', label: '中文' },
+    { code: 'en', label: 'English' }
+];
+const DEFAULT_LANGUAGE = 'zh';
+
+// 取某個欄位在目前使用者母語下的翻譯內容；該語言沒填則退回中文，避免開天窗
+function tr(row, baseField, langCode) {
+    if (!row) return '';
+    const lang = langCode || DEFAULT_LANGUAGE;
+    return row[`${baseField}_${lang}`] || row[`${baseField}_${DEFAULT_LANGUAGE}`] || '';
+}
+function getCurrentLanguage() {
+    return (currentUserData && currentUserData.nativeLanguage) || DEFAULT_LANGUAGE;
+}
+
+/* =========================================================
+ * Google Sheets 資料來源（直接讀取真實網址，不使用內建備援資料）
+ * ========================================================= */
+const SHEET_URLS = {
+    courseMap:        'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=899358556&single=true&output=csv',
+    stageMap:         'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=1417219434&single=true&output=csv',
+    vocabulary:       'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=0&single=true&output=csv',
+    grammarPoints:    'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=721361382&single=true&output=csv',
+    grammarRules:     'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=1172112219&single=true&output=csv',
+    speakingQa:       'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=700373279&single=true&output=csv',
+    // 單元句型頁面尚未拿到專屬分頁網址，留空；拿到後直接貼進這裡即可，不需要改其他程式碼
+    unitKeySentences: ''
+};
+
+// 讀取診斷紀錄：每張表的讀取結果都會留一筆，畫面上會把有問題的表清楚列出來
+const sheetLoadDiagnostics = {};
+
+function parseCsv(text) {
+    const lines = text.trim().split(/\r?\n/);
+    if (!lines.length || !lines[0]) return [];
+    const headers = lines[0].split(",").map(h => h.trim());
+    return lines.slice(1).filter(Boolean).map(line => {
+        const cells = line.split(",").map(c => c.trim());
+        const row = {};
+        headers.forEach((h, i) => row[h] = cells[i] || "");
+        return row;
+    });
+}
+
+async function fetchSheetRows(url, sheetLabel) {
+    if (!url) {
+        sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: '尚未設定網址' };
+        return null;
+    }
+    try {
+        const res = await fetch(url);
+        if (!res.ok) {
+            sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
+            return null;
+        }
+        const text = await res.text();
+        let rows;
+        try {
+            rows = parseCsv(text);
+        } catch (parseErr) {
+            sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `CSV 解析失敗：${parseErr.message}` };
+            return null;
+        }
+        sheetLoadDiagnostics[sheetLabel] = { ok: true, rowCount: rows.length };
+        return rows;
+    } catch (err) {
+        // fetch 本身失敗：常見成因是 CORS 被擋，或網路完全連不上
+        const isLikelyCors = err instanceof TypeError;
+        sheetLoadDiagnostics[sheetLabel] = {
+            ok: false,
+            reason: isLikelyCors
+                ? `無法連線（可能是 CORS 被擋或網址無效）：${err.message}`
+                : `讀取發生錯誤：${err.message}`
+        };
+        return null;
+    }
+}
+
+function renderSheetDiagnosticsBanner() {
+    const failed = Object.entries(sheetLoadDiagnostics).filter(([, v]) => !v.ok);
+    if (!failed.length) return '';
+    return `
+        <div style="background:#fdf0f0; border:1px solid #f5c2c2; border-radius:12px; padding:14px; margin-bottom:16px; text-align:left;">
+            <div style="font-weight:800; color:var(--duo-red); margin-bottom:6px;"><i class="fa-solid fa-triangle-exclamation"></i> Google Sheets 讀取診斷</div>
+            ${failed.map(([label, v]) => `<div style="font-size:0.82rem; color:#7a2e2e; margin-top:4px;">・${label}：${v.reason}</div>`).join('')}
+        </div>
+    `;
+}
+
+/* =========================================================
+ * 六種關卡類型，固定順序＋圖示（可擴充：StageMap 沒填的關卡不會顯示）
+ * ========================================================= */
+const ACTIVITY_REGISTRY = [
+    { activityId: 'warmup',   icon: 'fa-compass',    displayName: '課程暖身' },
+    { activityId: 'shadow',   icon: 'fa-headset',    displayName: '句子跟讀' },
+    { activityId: 'chunk',    icon: 'fa-dumbbell',   displayName: '字塊' },
+    { activityId: 'speaking', icon: 'fa-microphone', displayName: '口說' },
+    { activityId: 'dialogue', icon: 'fa-comments',   displayName: '對話' },
+    { activityId: 'challenge',icon: 'fa-trophy',     displayName: '綜合挑戰' }
+];
+const PASS_THRESHOLD = 0.8; // 統一 80% 過關門檻
+
+let courseMapRows = null, stageMapRows = null, vocabularyRows = null;
+let grammarPointsRows = null, grammarRulesRows = null, speakingQaRows = null, unitKeySentencesRows = null;
+let sheetDataLoaded = false;
+
+async function loadAllSheetData() {
+    if (sheetDataLoaded) return;
+    const [cm, sm, vb, gp, gr, sq, ks] = await Promise.all([
+        fetchSheetRows(SHEET_URLS.courseMap, 'CourseMap'),
+        fetchSheetRows(SHEET_URLS.stageMap, 'StageMap'),
+        fetchSheetRows(SHEET_URLS.vocabulary, 'Vocabulary'),
+        fetchSheetRows(SHEET_URLS.grammarPoints, 'GrammarPoints'),
+        fetchSheetRows(SHEET_URLS.grammarRules, 'GrammarRules'),
+        fetchSheetRows(SHEET_URLS.speakingQa, 'SpeakingQA'),
+        fetchSheetRows(SHEET_URLS.unitKeySentences, 'UnitKeySentences')
+    ]);
+    courseMapRows = cm; stageMapRows = sm; vocabularyRows = vb;
+    grammarPointsRows = gp; grammarRulesRows = gr; speakingQaRows = sq; unitKeySentencesRows = ks;
+    sheetDataLoaded = true;
+}
+
+function trailingNumber(id) {
+    const m = String(id || '').match(/(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+}
+
+/* =========================================================
+ * Members/{uid}/lessonProgress/{lessonId} 記憶體快取
+ * ========================================================= */
+let lessonProgressCache = {};
+
+async function loadLessonProgressFor(lessonIds) {
+    if (!currentUid) return;
+    await Promise.all(lessonIds.map(async (lid) => {
+        if (lessonProgressCache[lid]) return;
+        const data = await FirestoreService.getLessonProgress(currentUid, lid);
+        lessonProgressCache[lid] = data || { activities: {} };
+    }));
+}
+
+function getActivitiesForLesson(lessonId) {
+    const stagesForLesson = (stageMapRows || []).filter(r => r.lessonId === lessonId);
+    const activeTypes = new Set(stagesForLesson.map(r => r.activityType));
+    return ACTIVITY_REGISTRY.filter(a => activeTypes.has(a.activityId));
+}
+
+function getActivityStatus(lessonId, activityId, isFirstInLesson) {
+    const saved = lessonProgressCache[lessonId]?.activities?.[activityId]?.status;
+    if (saved) return saved;
+    return isFirstInLesson ? 'available' : 'locked';
+}
+
+// 完成一個 Activity：記錄結果、依 Registry 順序解鎖下一個已設定的 Activity
+async function completeActivity(lessonId, activityId, passed, correctCount, totalCount) {
+    if (!lessonProgressCache[lessonId]) lessonProgressCache[lessonId] = { activities: {} };
+    const activities = { ...(lessonProgressCache[lessonId].activities || {}) };
+    activities[activityId] = {
+        status: passed ? 'completed' : 'needs_review',
+        correctCount, totalCount,
+        lastAttemptAt: new Date().toISOString()
+    };
+
+    const orderedActive = getActivitiesForLesson(lessonId);
+    const idx = orderedActive.findIndex(a => a.activityId === activityId);
+    if (idx >= 0 && idx < orderedActive.length - 1) {
+        const nextId = orderedActive[idx + 1].activityId;
+        if (!activities[nextId] || activities[nextId].status === 'locked') {
+            activities[nextId] = { ...(activities[nextId] || {}), status: 'available' };
+        }
+    }
+    lessonProgressCache[lessonId].activities = activities;
+    if (currentUid) await FirestoreService.saveLessonProgress(currentUid, lessonId, activities);
+}
+
+/* =========================================================
+ * 語音（TTS 播放 + 語音辨識判定），從 Learning Lab 已驗證的邏輯移植
+ * ========================================================= */
+let cachedFemaleVoiceApp = null;
+function pickFemaleKoreanVoiceApp() {
+    if (cachedFemaleVoiceApp) return cachedFemaleVoiceApp;
+    const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    const krVoices = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('ko'));
+    cachedFemaleVoiceApp = krVoices.find(v => /female|여성|yuna|여자/i.test(v.name)) || krVoices[0] || null;
+    return cachedFemaleVoiceApp;
+}
+function speakKoreanApp(text) {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ko-KR'; utter.rate = 0.92; utter.pitch = 1.05;
+    const v = pickFemaleKoreanVoiceApp();
+    if (v) utter.voice = v;
+    window.speechSynthesis.speak(utter);
+}
+if ('speechSynthesis' in window) {
+    window.speechSynthesis.onvoiceschanged = () => { cachedFemaleVoiceApp = null; };
+}
+const SpeechRecognitionCtorApp = window.SpeechRecognition || window.webkitSpeechRecognition;
+function normalizeKrApp(s) { return String(s || '').replace(/\s+/g, '').replace(/[.,!?~]/g, ''); }
+function judgeKoreanAnswerApp(spoken, target) {
+    const s = normalizeKrApp(spoken), t = normalizeKrApp(target);
+    if (!s) return false;
+    return s === t || s.includes(t) || t.includes(s);
+}
 
 function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -102,51 +301,436 @@ function checkAndUpdateStreak(userData) {
 /**
  * 🗺️ 動態渲染學習地圖
  */
-function renderMapUnits(category, level) {
+function shuffleApp(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
+// 目前正在畫面上顯示的 Unit（首頁地圖一次只顯示一個 Unit）
+let currentDisplayedUnitId = null;
+
+async function renderMapUnits(category, level) {
+    const container = document.getElementById('units-map-list');
+    if (!container) return;
+    container.innerHTML = `<p style="text-align:center;color:#9ca3af;padding:24px;">課程載入中...</p>`;
+
+    await loadAllSheetData();
+
+    const diagBanner = renderSheetDiagnosticsBanner();
+    if (!courseMapRows || !stageMapRows) {
+        container.innerHTML = diagBanner || `<p style="text-align:center;color:var(--duo-red);padding:20px;">課程地圖資料讀取失敗。</p>`;
+        return;
+    }
+
+    const lessonsForCourse = courseMapRows.filter(r => r.courseId === level);
+    if (!lessonsForCourse.length) {
+        container.innerHTML = diagBanner + `<p style="text-align:center;color:#9ca3af;padding:20px;">目前 ${escapeHtml(level)} 尚未在 CourseMap 設定課程內容。</p>`;
+        return;
+    }
+
+    await loadLessonProgressFor(lessonsForCourse.map(l => l.lessonId));
+
+    // 決定要顯示哪個 Unit：優先顯示「最近一次有完成紀錄」的那個 Lesson 所屬的 Unit；全新學生顯示第一個 Unit
+    if (!currentDisplayedUnitId) {
+        let mostRecentLessonId = null, mostRecentTime = 0;
+        Object.entries(lessonProgressCache).forEach(([lid, data]) => {
+            Object.values(data.activities || {}).forEach(act => {
+                if (act.lastAttemptAt) {
+                    const t = new Date(act.lastAttemptAt).getTime();
+                    if (t > mostRecentTime) { mostRecentTime = t; mostRecentLessonId = lid; }
+                }
+            });
+        });
+        const matchedLesson = mostRecentLessonId ? lessonsForCourse.find(l => l.lessonId === mostRecentLessonId) : null;
+        const sortedUnitIds = [...new Set(lessonsForCourse.map(l => l.unitId))].sort((a, b) => trailingNumber(a) - trailingNumber(b));
+        currentDisplayedUnitId = matchedLesson ? matchedLesson.unitId : sortedUnitIds[0];
+    }
+
+    renderHomeMapForUnit(currentDisplayedUnitId, lessonsForCourse, diagBanner);
+}
+
+function renderHomeMapForUnit(unitId, lessonsForCourse, diagBanner) {
     const container = document.getElementById('units-map-list');
     if (!container) return;
 
-    const categoryData = MULTI_LANG_COURSES[category] || {};
-    const units = categoryData[level] || [
-        { id: 1, title: `單元 1：${level} 基礎課程`, requiredWords: [] }
-    ];
+    const lessonsInUnit = lessonsForCourse.filter(l => l.unitId === unitId).sort((a, b) => trailingNumber(a.lessonId) - trailingNumber(b.lessonId));
+    const unitTitle = tr(lessonsInUnit[0] || {}, 'unitTitle', getCurrentLanguage());
+    const unitNumber = trailingNumber(unitId);
 
-    container.innerHTML = units.map(unit => `
-        <div class="unit-card">
-            <div class="unit-header">
-                <div class="unit-title"><i class="fa-solid fa-map-location-dot" style="color: var(--duo-blue);"></i> ${unit.title}</div>
-            </div>
-            <div class="stages-path">
-                <button class="stage-btn-3d" data-unit="${unit.id}" data-stage="1"><i class="fa-solid fa-star"></i> 階段 1</button>
-                <button class="stage-btn-3d locked" data-unit="${unit.id}" data-stage="2"><i class="fa-solid fa-lock"></i> 階段 2</button>
-                <button class="stage-btn-3d locked" data-unit="${unit.id}" data-stage="3"><i class="fa-solid fa-lock"></i> 階段 3</button>
+    container.innerHTML = `
+        ${diagBanner || ''}
+        <button class="unit-header-bar" id="btn-open-unit-overview">
+            <span class="unit-header-title">第 ${unitNumber} 單元： ${escapeHtml(unitTitle)}</span>
+        </button>
+        <button class="unit-header-list-btn" id="btn-open-key-sentences" style="position:relative; top:-58px; float:right; margin-right:4px;">
+            <i class="fa-solid fa-list"></i>
+        </button>
+        <div style="clear:both;"></div>
+        ${lessonsInUnit.map(lesson => renderLessonBlock(lesson)).join('')}
+    `;
+
+    document.getElementById('btn-open-unit-overview')?.addEventListener('click', () => openUnitOverview());
+    document.getElementById('btn-open-key-sentences')?.addEventListener('click', () => openUnitKeySentences(unitId));
+    bindActivityButtons();
+}
+
+function renderLessonBlock(lesson) {
+    const activities = getActivitiesForLesson(lesson.lessonId);
+    const lessonTitle = tr(lesson, 'lessonTitle', getCurrentLanguage()) || lesson.lessonTitle;
+
+    if (!activities.length) {
+        return `
+            <div class="lesson-divider">${escapeHtml(lessonTitle)}</div>
+            <p style="text-align:center;color:#9ca3af;font-size:0.82rem;">此課尚未在 StageMap 設定任何關卡</p>
+        `;
+    }
+
+    const nodesHtml = activities.map((act, idx) => {
+        const status = getActivityStatus(lesson.lessonId, act.activityId, idx === 0);
+        const locked = status === 'locked';
+        return `
+            <button class="activity-node status-${status}" data-lesson="${escapeHtml(lesson.lessonId)}" data-activity="${act.activityId}" ${locked ? 'disabled' : ''} title="${escapeHtml(act.displayName)}">
+                <i class="fa-solid ${act.icon}"></i>
+                ${status === 'completed' ? '<span class="activity-badge"><i class="fa-solid fa-check"></i></span>' : ''}
+                ${status === 'needs_review' ? '<span class="activity-badge">!</span>' : ''}
+            </button>
+        `;
+    }).join('');
+
+    return `
+        <div class="lesson-divider">${escapeHtml(lessonTitle)}</div>
+        <div class="activity-column">${nodesHtml}</div>
+    `;
+}
+
+function bindActivityButtons() {
+    document.querySelectorAll('.activity-node').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const lessonId = btn.getAttribute('data-lesson');
+            const activityId = btn.getAttribute('data-activity');
+            openActivity(lessonId, activityId);
+        });
+    });
+}
+
+/* =========================================================
+ * 📚 單元總覽：所有 Unit 清單＋完成進度條
+ * ========================================================= */
+function openUnitOverview() {
+    const mapView = document.getElementById('map-view');
+    const overviewView = document.getElementById('unit-overview-view');
+    mapView?.classList.add('hidden');
+    overviewView?.classList.remove('hidden');
+
+    const lessonsForCourse = (courseMapRows || []).filter(r => r.courseId === currentSelectedLevel);
+    const unitMap = {};
+    lessonsForCourse.forEach(row => {
+        if (!unitMap[row.unitId]) unitMap[row.unitId] = { unitId: row.unitId, unitTitle: tr(row, 'unitTitle', getCurrentLanguage()), lessons: [] };
+        unitMap[row.unitId].lessons.push(row);
+    });
+    const units = Object.values(unitMap).sort((a, b) => trailingNumber(a.unitId) - trailingNumber(b.unitId));
+
+    const listEl = document.getElementById('unit-overview-list');
+    if (!listEl) return;
+    listEl.innerHTML = units.map(unit => {
+        let totalActs = 0, doneActs = 0;
+        unit.lessons.forEach(lesson => {
+            const acts = getActivitiesForLesson(lesson.lessonId);
+            totalActs += acts.length;
+            acts.forEach(act => {
+                const status = getActivityStatus(lesson.lessonId, act.activityId, acts.indexOf(act) === 0);
+                if (status === 'completed') doneActs++;
+            });
+        });
+        const pct = totalActs ? Math.round((doneActs / totalActs) * 100) : 0;
+        return `
+            <button class="unit-overview-card" data-unit-jump="${escapeHtml(unit.unitId)}">
+                <div class="unit-overview-title">第 ${trailingNumber(unit.unitId)} 單元：${escapeHtml(unit.unitTitle)}</div>
+                <div class="unit-overview-progress-track"><div class="unit-overview-progress-fill" style="width:${pct}%;"></div></div>
+            </button>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('[data-unit-jump]').forEach(card => {
+        card.addEventListener('click', () => {
+            currentDisplayedUnitId = card.getAttribute('data-unit-jump');
+            overviewView?.classList.add('hidden');
+            mapView?.classList.remove('hidden');
+            renderMapUnits(currentCategory, currentSelectedLevel);
+        });
+    });
+}
+document.getElementById('btn-unit-overview-back')?.addEventListener('click', () => {
+    document.getElementById('unit-overview-view')?.classList.add('hidden');
+    document.getElementById('map-view')?.classList.remove('hidden');
+});
+
+/* =========================================================
+ * 📖 單元句型頁面：重點語句（唯讀預覽）
+ * ========================================================= */
+function openUnitKeySentences(unitId) {
+    const mapView = document.getElementById('map-view');
+    const ksView = document.getElementById('unit-key-sentences-view');
+    mapView?.classList.add('hidden');
+    ksView?.classList.remove('hidden');
+
+    const listEl = document.getElementById('unit-key-sentences-list');
+    if (!listEl) return;
+
+    if (!unitKeySentencesRows) {
+        listEl.innerHTML = `<p style="text-align:center;color:#9ca3af;padding:20px;">尚未設定重點語句資料來源（UnitKeySentences 網址還沒串接）。</p>`;
+        return;
+    }
+    const rows = unitKeySentencesRows.filter(r => r.unitId === unitId);
+    if (!rows.length) {
+        listEl.innerHTML = `<p style="text-align:center;color:#9ca3af;padding:20px;">這個單元尚未設定重點語句。</p>`;
+        return;
+    }
+    listEl.innerHTML = rows.map((r, idx) => `
+        <div class="key-sentence-bubble-row ${idx % 2 === 1 ? 'align-right' : ''}">
+            <div class="key-sentence-bubble">
+                <div class="ks-kr"><button class="mini-play-btn" data-speak="${escapeHtml(r.kr)}" style="border:none;background:none;color:var(--duo-blue);"><i class="fa-solid fa-volume-high"></i></button> ${escapeHtml(r.kr)}</div>
+                <div class="ks-tr">${escapeHtml(tr(r, 'translation', getCurrentLanguage()))}</div>
             </div>
         </div>
     `).join('');
+    listEl.querySelectorAll('[data-speak]').forEach(btn => {
+        btn.addEventListener('click', () => speakKoreanApp(btn.getAttribute('data-speak')));
+    });
+}
+document.getElementById('btn-key-sentences-back')?.addEventListener('click', () => {
+    document.getElementById('unit-key-sentences-view')?.classList.add('hidden');
+    document.getElementById('map-view')?.classList.remove('hidden');
+});
 
-    bindMapStageButtons();
+/* =========================================================
+ * Activity 派送器：目前只有「課程暖身」真正實作，其餘關卡先顯示誠實的「尚未開放」
+ * ========================================================= */
+async function openActivity(lessonId, activityId) {
+    const mapView = document.getElementById('map-view');
+    const gameView = document.getElementById('game-view');
+    const content = document.getElementById('activity-player-content');
+    if (!content) return;
+
+    mapView?.classList.add('hidden');
+    gameView?.classList.remove('hidden');
+
+    if (activityId === 'warmup') {
+        await runWarmupActivity(lessonId, content);
+    } else {
+        const activityMeta = ACTIVITY_REGISTRY.find(a => a.activityId === activityId);
+        content.innerHTML = `
+            <div class="unit-card" style="text-align:center;">
+                <div style="font-size:2rem;color:var(--duo-blue);margin-bottom:10px;"><i class="fa-solid fa-hammer"></i></div>
+                <h3 style="margin:0 0 8px;color:#1f2937;">「${escapeHtml(activityMeta?.displayName || '')}」尚未開放</h3>
+                <p style="font-size:0.85rem;color:#6b7280;">這個關卡類型還在建置中，敬請期待。</p>
+            </div>
+        `;
+    }
 }
 
-function bindMapStageButtons() {
-    const modalLocked = document.getElementById('modal-locked');
-    const modalWarmupAsk = document.getElementById('modal-warmup-ask');
+/* =========================================================
+ * 📖 課程暖身：單字 + 句型規則 + 8 題隨機口說測驗（80% 過關）
+ * ========================================================= */
+let warmupQuizState = { queue: [], total: 0, correct: 0, current: null };
+let warmupRecognizer = null, warmupListening = false, warmupListenTimeout = null;
 
-    document.querySelectorAll('.stage-btn-3d').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const target = e.currentTarget;
-            currentSelectedUnit = Number(target.getAttribute('data-unit')); // 問題十：統一為 Number
-            currentSelectedStage = Number(target.getAttribute('data-stage'));
-            const isLocked = target.classList.contains('locked');
+async function runWarmupActivity(lessonId, content) {
+    const lang = getCurrentLanguage();
+    const words = (vocabularyRows || []).filter(r => r.lessonId === lessonId);
+    const points = (grammarPointsRows || []).filter(r => r.lessonId === lessonId);
+    const rules = (grammarRulesRows || []).filter(r => r.lessonId === lessonId);
+    const qaPool = (speakingQaRows || []).filter(r => r.lessonId === lessonId && (r.stageId === 'warmup' || !r.stageId));
 
-            if (isLocked) {
-                const msgLbl = document.getElementById('lbl-locked-msg');
-                if (msgLbl) msgLbl.innerText = "完成前面關卡，或聯繫後台管理員開通權限唷！";
-                modalLocked?.classList.remove('hidden');
-            } else {
-                modalWarmupAsk?.classList.remove('hidden');
-            }
+    const missing = [];
+    if (!vocabularyRows) missing.push('Vocabulary');
+    if (!grammarPointsRows) missing.push('GrammarPoints');
+    if (!grammarRulesRows) missing.push('GrammarRules');
+    if (!speakingQaRows) missing.push('SpeakingQA');
+
+    content.innerHTML = `
+        ${renderSheetDiagnosticsBanner()}
+        <div class="unit-card">
+            <h3 style="margin:0 0 12px;color:#1f2937;"><i class="fa-solid fa-book-open" style="color:var(--duo-blue);"></i> 單字</h3>
+            <div id="warmup-vocab-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
+        <div class="unit-card" style="margin-top:14px;">
+            <h3 style="margin:0 0 12px;color:#1f2937;"><i class="fa-solid fa-diagram-project" style="color:var(--duo-blue);"></i> 句型規則</h3>
+            <div id="warmup-grammar-block"></div>
+        </div>
+        <button class="btn-3d btn-3d-primary" id="btn-start-warmup-quiz" style="width:100%;padding:14px;margin-top:16px;">
+            <i class="fa-solid fa-microphone"></i> 開始暖身測驗（隨機 8 題）
+        </button>
+        <div id="warmup-quiz-zone" style="margin-top:16px;"></div>
+    `;
+
+    // 單字清單
+    const vocabList = document.getElementById('warmup-vocab-list');
+    if (words.length) {
+        vocabList.innerHTML = words.map(w => `
+            <button class="btn-3d btn-3d-secondary" data-speak="${escapeHtml(w.kr)}" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;text-align:left;">
+                <span><b style="font-size:1.05rem;">${escapeHtml(w.kr_pron || w.kr)}</b> <span style="color:#9ca3af;font-size:0.8rem;">(${escapeHtml(w.pos || '')})</span></span>
+                <span style="display:flex;align-items:center;gap:8px;">
+                    <span style="color:#6b7280;font-size:0.85rem;">${escapeHtml(tr(w, 'meaning', lang))}</span>
+                    <i class="fa-solid fa-volume-high" style="color:var(--duo-blue);"></i>
+                </span>
+            </button>
+        `).join('');
+        vocabList.querySelectorAll('[data-speak]').forEach(btn => {
+            btn.addEventListener('click', () => speakKoreanApp(btn.getAttribute('data-speak')));
         });
+    } else {
+        vocabList.innerHTML = `<p style="color:#9ca3af;font-size:0.85rem;">這一課尚未在 Vocabulary 設定單字。</p>`;
+    }
+
+    // 句型規則 + 例句
+    const grammarBlock = document.getElementById('warmup-grammar-block');
+    let grammarHtml = '';
+    if (points.length) {
+        grammarHtml += `<p style="color:#4b5563;font-size:0.9rem;line-height:1.7;margin-bottom:14px;">${escapeHtml(tr(points[0], 'description', lang))}</p>`;
+    }
+    if (rules.length) {
+        grammarHtml += rules.map(r => `
+            <div style="background:#f9fafb;border-radius:12px;padding:10px 14px;margin-bottom:8px;">
+                <div style="font-weight:800;color:#1f2937;">${escapeHtml(tr(r, 'conditionLabel', lang))}</div>
+                <div style="color:#9ca3af;font-size:0.8rem;margin-top:4px;">${escapeHtml(r.samples || '')}</div>
+            </div>
+        `).join('');
+    }
+    grammarBlock.innerHTML = grammarHtml || `<p style="color:#9ca3af;font-size:0.85rem;">這一課尚未在 GrammarPoints／GrammarRules 設定句型內容。</p>`;
+
+    // 開始測驗
+    document.getElementById('btn-start-warmup-quiz')?.addEventListener('click', () => {
+        if (!qaPool.length) {
+            alert('這一課尚未在 SpeakingQA 設定暖身測驗題目，無法開始。');
+            return;
+        }
+        startWarmupQuiz(lessonId, qaPool);
     });
+}
+
+function startWarmupQuiz(lessonId, qaPool) {
+    const picked = shuffleApp(qaPool).slice(0, Math.min(8, qaPool.length));
+    warmupQuizState = { queue: picked, total: picked.length, correct: 0, current: null, lessonId };
+    showWarmupQuizQuestion();
+}
+
+function showWarmupQuizQuestion() {
+    const zone = document.getElementById('warmup-quiz-zone');
+    if (!zone) return;
+
+    if (!warmupQuizState.queue.length) {
+        finishWarmupQuiz();
+        return;
+    }
+    const qa = warmupQuizState.queue[0];
+    warmupQuizState.current = qa;
+    const questionText = qa.question || qa.questionA || '';
+
+    zone.innerHTML = `
+        <div class="unit-card" style="text-align:center;">
+            <div style="font-size:0.8rem;color:#9ca3af;margin-bottom:8px;">第 ${warmupQuizState.total - warmupQuizState.queue.length + 1} / ${warmupQuizState.total} 題</div>
+            <button class="btn-3d btn-3d-secondary" id="btn-warmup-quiz-play" style="padding:12px 24px;"><i class="fa-solid fa-volume-high"></i> 播放題目</button>
+            <button class="btn-3d btn-3d-primary" id="btn-warmup-quiz-mic" style="width:76px;height:76px;border-radius:50%;margin:18px auto 8px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;"><i class="fa-solid fa-microphone"></i></button>
+            <p style="font-size:0.82rem;color:#6b7280;" id="warmup-quiz-mic-label">先播放題目，再按麥克風回答</p>
+            <div id="warmup-quiz-feedback" style="margin-top:10px;font-weight:800;"></div>
+        </div>
+    `;
+    if (!questionText) {
+        zone.innerHTML += `<p style="text-align:center;color:var(--duo-red);font-size:0.82rem;margin-top:8px;">這一題在 SpeakingQA 沒有設定「question」題目欄位，無法播放語音。</p>`;
+    }
+    document.getElementById('btn-warmup-quiz-play')?.addEventListener('click', () => { if (questionText) speakKoreanApp(questionText); });
+    document.getElementById('btn-warmup-quiz-mic')?.addEventListener('click', handleWarmupQuizMicClick);
+}
+
+function handleWarmupQuizMicClick() {
+    if (warmupListening) return;
+    const qa = warmupQuizState.current;
+    if (!qa) return;
+
+    if (!SpeechRecognitionCtorApp) {
+        const ok = confirm(`（此瀏覽器不支援自動語音辨識）\n請回答「${qa.answerB}」，說出來了嗎？`);
+        handleWarmupQuizResult(ok);
+        return;
+    }
+    let recognizer;
+    try { recognizer = new SpeechRecognitionCtorApp(); } catch (e) { alert('語音辨識初始化失敗，請重新整理頁面再試一次。'); return; }
+    warmupRecognizer = recognizer;
+    recognizer.lang = 'ko-KR'; recognizer.interimResults = false; recognizer.maxAlternatives = 3;
+    warmupListening = true;
+    const micBtn = document.getElementById('btn-warmup-quiz-mic');
+    const micLabel = document.getElementById('warmup-quiz-mic-label');
+    micBtn?.classList.add('recording');
+    if (micLabel) micLabel.innerText = '聽你說...';
+
+    const finish = (correct) => {
+        clearTimeout(warmupListenTimeout);
+        warmupListening = false;
+        micBtn?.classList.remove('recording');
+        handleWarmupQuizResult(correct);
+    };
+    warmupListenTimeout = setTimeout(() => {
+        if (!warmupListening) return;
+        try { recognizer.stop(); } catch (e) {}
+        warmupListening = false;
+        micBtn?.classList.remove('recording');
+        if (micLabel) micLabel.innerText = '沒聽清楚，再按一次試試';
+    }, 6000);
+
+    recognizer.onresult = (event) => {
+        const alts = Array.from(event.results[0]).map(r => r.transcript);
+        finish(alts.some(a => judgeKoreanAnswerApp(a, qa.answerB)));
+    };
+    recognizer.onerror = () => {
+        clearTimeout(warmupListenTimeout);
+        warmupListening = false;
+        micBtn?.classList.remove('recording');
+        if (micLabel) micLabel.innerText = '沒聽清楚，再按一次試試';
+    };
+    recognizer.onend = () => { warmupListening = false; micBtn?.classList.remove('recording'); };
+    try { recognizer.start(); } catch (e) { finish(false); }
+}
+
+function handleWarmupQuizResult(correct) {
+    if (correct) warmupQuizState.correct++;
+    const fb = document.getElementById('warmup-quiz-feedback');
+    if (fb) {
+        fb.style.color = correct ? 'var(--duo-green)' : 'var(--duo-red)';
+        fb.innerText = correct ? '答對了！' : `再聽一次：${warmupQuizState.current.answerB}`;
+    }
+    if (!correct) speakKoreanApp(warmupQuizState.current.answerB);
+    warmupQuizState.queue.shift();
+    setTimeout(showWarmupQuizQuestion, 1200);
+}
+
+async function finishWarmupQuiz() {
+    const zone = document.getElementById('warmup-quiz-zone');
+    const percent = warmupQuizState.total ? Math.round((warmupQuizState.correct / warmupQuizState.total) * 100) : 0;
+    const passed = warmupQuizState.total > 0 && (warmupQuizState.correct / warmupQuizState.total) >= PASS_THRESHOLD;
+
+    await completeActivity(warmupQuizState.lessonId, 'warmup', passed, warmupQuizState.correct, warmupQuizState.total);
+
+    if (zone) {
+        zone.innerHTML = `
+            <div class="unit-card" style="text-align:center;">
+                <div style="font-size:2.2rem;color:${passed ? 'var(--duo-gold)' : '#9ca3af'};margin-bottom:8px;">
+                    <i class="fa-solid ${passed ? 'fa-trophy' : 'fa-rotate-right'}"></i>
+                </div>
+                <h3 style="margin:0 0 6px;color:#1f2937;">${passed ? '暖身完成！' : '再練習一次吧'}</h3>
+                <p style="color:#6b7280;font-size:0.9rem;">答對 ${warmupQuizState.correct}/${warmupQuizState.total}（${percent}%）${passed ? '，已通過 80% 門檻' : '，需達 80% 以上才算過關'}</p>
+                <button class="btn-3d btn-3d-primary" id="btn-warmup-back-to-map" style="width:100%;padding:12px;margin-top:14px;">返回地圖</button>
+            </div>
+        `;
+        document.getElementById('btn-warmup-back-to-map')?.addEventListener('click', () => {
+            document.getElementById('game-view')?.classList.add('hidden');
+            document.getElementById('map-view')?.classList.remove('hidden');
+            renderMapUnits(currentCategory, currentSelectedLevel);
+        });
+    }
 }
 
 function updateUIProfile(data) {
@@ -541,18 +1125,27 @@ function setupNavigationAndModals() {
         }
         errEl?.classList.add('hidden');
 
+        const nativeLanguage = document.getElementById('select-native-language')?.value || DEFAULT_LANGUAGE;
         const today = new Date().toISOString().split('T')[0];
         try {
             await FirestoreService.updateMember(currentUid, {
-                nickname: val, profileCompleted: true, lastNicknameChange: today, updatedAt: today
+                nickname: val, profileCompleted: true, lastNicknameChange: today, updatedAt: today,
+                nativeLanguage
             });
-            currentUserData = { ...currentUserData, nickname: val, profileCompleted: true, lastNicknameChange: today };
+            currentUserData = { ...currentUserData, nickname: val, profileCompleted: true, lastNicknameChange: today, nativeLanguage };
             document.getElementById('modal-setup-nickname')?.classList.add('hidden');
             continueIntoApp();
         } catch (err) {
             alert(`設定暱稱失敗: ${err.message}`);
         }
     });
+
+    // 母語下拉選單：動態依 LANGUAGE_REGISTRY 產生，不寫死在 HTML 裡
+    const langSelect = document.getElementById('select-native-language');
+    if (langSelect && !langSelect.dataset.populated) {
+        langSelect.innerHTML = LANGUAGE_REGISTRY.map(l => `<option value="${l.code}">${escapeHtml(l.label)}</option>`).join('');
+        langSelect.dataset.populated = '1';
+    }
 
     // 🔑 修改密碼功能（HTML 若無對應元素則此區塊為安全的無作用程式，不影響其他功能）
     const modalChangePassword = document.getElementById('modal-change-password');
