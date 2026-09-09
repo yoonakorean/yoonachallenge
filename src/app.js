@@ -46,62 +46,51 @@ function getCurrentLanguage() {
 /* =========================================================
  * Google Sheets 資料來源（直接讀取真實網址，不使用內建備援資料）
  * ========================================================= */
-const SHEET_URLS = {
-    courseMap:        'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=899358556&single=true&output=csv',
-    stageMap:         'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=1417219434&single=true&output=csv',
-    vocabulary:       'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=0&single=true&output=csv',
-    grammarPoints:    'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=721361382&single=true&output=csv',
-    grammarRules:     'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=1172112219&single=true&output=csv',
-    speakingQa:       'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0Timxt4YCYc6bE8ncRRAb8qWQl88gwnFEgjsYYjPJJzEEyvNIKhFGF-cQxq_ZYuaSX0h8q2vc5-hP/pub?gid=700373279&single=true&output=csv',
-    // 單元句型頁面尚未拿到專屬分頁網址，留空；拿到後直接貼進這裡即可，不需要改其他程式碼
-    unitKeySentences: ''
+const SHEET_NAMES = {
+    courseMap:        'CourseMap',
+    stageMap:         'StageMap',
+    vocabulary:       'Vocabulary',
+    grammarPoints:    'GrammarPoints',
+    grammarRules:     'GrammarRules',
+    speakingQa:       'SpeakingQA',
+    unitKeySentences: 'UnitKeySentences'
 };
+
+// 課程內容 GAS 代理網址（見 CourseContentProxy.gs 的部署說明）。
+// 部署後把拿到的網址（結尾 /exec）貼在這裡，其餘程式碼不需要更動。
+const GAS_SHEETS_PROXY_URL = 'https://script.google.com/macros/s/AKfycby--0EkUk1MSaYd_jmFg8Z4XZ6qB16cOf6tZw3ilO0EEBthHf5I7AJA8DHJBjYJu-tD/exec';
 
 // 讀取診斷紀錄：每張表的讀取結果都會留一筆，畫面上會把有問題的表清楚列出來
 const sheetLoadDiagnostics = {};
 
-function parseCsv(text) {
-    const lines = text.trim().split(/\r?\n/);
-    if (!lines.length || !lines[0]) return [];
-    const headers = lines[0].split(",").map(h => h.trim());
-    return lines.slice(1).filter(Boolean).map(line => {
-        const cells = line.split(",").map(c => c.trim());
-        const row = {};
-        headers.forEach((h, i) => row[h] = cells[i] || "");
-        return row;
-    });
-}
-
-async function fetchSheetRows(url, sheetLabel) {
-    if (!url) {
-        sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: '尚未設定網址' };
+async function fetchSheetRows(sheetName, sheetLabel) {
+    if (!GAS_SHEETS_PROXY_URL) {
+        sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: '尚未設定 GAS_SHEETS_PROXY_URL（請先部署 CourseContentProxy.gs 並填入網址）' };
         return null;
     }
+    const url = `${GAS_SHEETS_PROXY_URL}?sheet=${encodeURIComponent(sheetName)}`;
     try {
         const res = await fetch(url);
         if (!res.ok) {
             sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
             return null;
         }
-        const text = await res.text();
-        let rows;
+        let data;
         try {
-            rows = parseCsv(text);
+            data = await res.json();
         } catch (parseErr) {
-            sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `CSV 解析失敗：${parseErr.message}` };
+            sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `JSON 解析失敗：${parseErr.message}` };
             return null;
         }
-        sheetLoadDiagnostics[sheetLabel] = { ok: true, rowCount: rows.length };
-        return rows;
+        if (data && data.error) {
+            sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: data.error };
+            return null;
+        }
+        sheetLoadDiagnostics[sheetLabel] = { ok: true, rowCount: Array.isArray(data) ? data.length : 0 };
+        return Array.isArray(data) ? data : [];
     } catch (err) {
-        // fetch 本身失敗：常見成因是 CORS 被擋，或網路完全連不上
-        const isLikelyCors = err instanceof TypeError;
-        sheetLoadDiagnostics[sheetLabel] = {
-            ok: false,
-            reason: isLikelyCors
-                ? `無法連線（可能是 CORS 被擋或網址無效）：${err.message}`
-                : `讀取發生錯誤：${err.message}`
-        };
+        // fetch 本身失敗：常見成因是 GAS 網址無效、或網路完全連不上（GAS 代理本身不會有 CORS/登入導轉問題）
+        sheetLoadDiagnostics[sheetLabel] = { ok: false, reason: `讀取發生錯誤：${err.message}` };
         return null;
     }
 }
@@ -137,13 +126,13 @@ let sheetDataLoaded = false;
 async function loadAllSheetData() {
     if (sheetDataLoaded) return;
     const [cm, sm, vb, gp, gr, sq, ks] = await Promise.all([
-        fetchSheetRows(SHEET_URLS.courseMap, 'CourseMap'),
-        fetchSheetRows(SHEET_URLS.stageMap, 'StageMap'),
-        fetchSheetRows(SHEET_URLS.vocabulary, 'Vocabulary'),
-        fetchSheetRows(SHEET_URLS.grammarPoints, 'GrammarPoints'),
-        fetchSheetRows(SHEET_URLS.grammarRules, 'GrammarRules'),
-        fetchSheetRows(SHEET_URLS.speakingQa, 'SpeakingQA'),
-        fetchSheetRows(SHEET_URLS.unitKeySentences, 'UnitKeySentences')
+        fetchSheetRows(SHEET_NAMES.courseMap, 'CourseMap'),
+        fetchSheetRows(SHEET_NAMES.stageMap, 'StageMap'),
+        fetchSheetRows(SHEET_NAMES.vocabulary, 'Vocabulary'),
+        fetchSheetRows(SHEET_NAMES.grammarPoints, 'GrammarPoints'),
+        fetchSheetRows(SHEET_NAMES.grammarRules, 'GrammarRules'),
+        fetchSheetRows(SHEET_NAMES.speakingQa, 'SpeakingQA'),
+        fetchSheetRows(SHEET_NAMES.unitKeySentences, 'UnitKeySentences')
     ]);
     courseMapRows = cm; stageMapRows = sm; vocabularyRows = vb;
     grammarPointsRows = gp; grammarRulesRows = gr; speakingQaRows = sq; unitKeySentencesRows = ks;
