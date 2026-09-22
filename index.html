@@ -109,6 +109,11 @@
         .activity-node.status-completed { background: var(--duo-gold) !important; color: #fff !important; box-shadow: 0 4px 0 #b45309 !important; }
         .activity-label { font-size: 0.75rem; font-weight: bold; color: #4b5563; text-align: center; }
         .score-badge { font-size: 0.7rem; color: #15803d; font-weight: 800; background: #dcfce7; padding: 2px 6px; border-radius: 8px; margin-top: 2px; }
+
+        /* 排行榜樣式 */
+        .leaderboard-list { text-align: left; margin-top: 15px; max-height: 250px; overflow-y: auto; }
+        .leaderboard-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; font-size: 0.9rem; }
+        .leaderboard-item:first-child { font-weight: bold; color: var(--duo-gold); }
     </style>
 </head>
 <body>
@@ -159,17 +164,29 @@
         </div>
     </div>
 
-    <!-- 🔒 3. 鎖定關卡提示 Modal -->
+    <!-- 🏆 3. 排行榜 Modal -->
+    <div id="modal-leaderboard" class="custom-modal hidden">
+        <div class="custom-modal-card">
+            <div class="close-icon-circle" id="btn-close-leaderboard-modal"><i class="fa-solid fa-xmark"></i></div>
+            <div style="font-size: 2.5rem; color: var(--duo-gold); margin-bottom: 6px; margin-top: 6px;"><i class="fa-solid fa-trophy"></i></div>
+            <h3 style="margin: 0 0 4px 0;">積分排行榜</h3>
+            <div id="leaderboard-content" class="leaderboard-list">
+                <div style="text-align:center; color:#9ca3af; padding:20px;">載入中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🔒 4. 鎖定關卡提示 Modal -->
     <div id="modal-locked" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div style="font-size: 2.8rem; color: #f59e0b; margin-bottom: 10px;"><i class="fa-solid fa-lock"></i></div>
             <h3 style="margin: 0 0 8px 0; color: #1f2937;">關卡鎖定中</h3>
-            <p style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">需要先完成「填空挑戰」才能解鎖聽打挑戰唷！</p>
+            <p style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">需要先完成前置關卡才能解鎖唷！</p>
             <button id="btn-close-locked-modal" class="btn-3d btn-3d-primary" style="width: 100%; padding: 10px;">我知道了</button>
         </div>
     </div>
 
-    <!-- 📖 4. 課前暖身 Modal -->
+    <!-- 📖 5. 課前暖身 Modal -->
     <div id="modal-warmup-ask" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-warmup-ask"><i class="fa-solid fa-xmark"></i></div>
@@ -183,7 +200,7 @@
         </div>
     </div>
 
-    <!-- 🎓 5. 切換程度 Modal (已擴充 0A ~ 4B) -->
+    <!-- 🎓 6. 切換程度 Modal -->
     <div id="modal-select-initial-level" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-level-modal"><i class="fa-solid fa-xmark"></i></div>
@@ -217,7 +234,8 @@
                 <span id="lbl-login-days">1</span> 天
             </div>
 
-            <div class="user-meta-item">
+            <!-- 點擊星號開啟排行榜 -->
+            <div class="user-meta-item" id="btn-leaderboard-trigger">
                 <i class="fa-solid fa-star" style="color: var(--duo-gold); font-size: 1.05rem;"></i>
                 <span id="lbl-xp">0</span>
             </div>
@@ -251,9 +269,7 @@
     </div>
 
     <script>
-        // =========================================================================
         // 1. 1A 程度 17 個單元資料庫生成
-        // =========================================================================
         const units1A = [];
         for (let i = 1; i <= 17; i++) {
             const numStr = i < 10 ? '0' + i : i;
@@ -286,31 +302,22 @@
             });
         }
 
-        // 🌟 2. 程度資料庫總表（支援 0A 到 4B）
-        const coursesConfig = {
-            "0A": [],
-            "0B": [],
-            "1A": units1A,
-            "1B": [],
-            "2A": [],
-            "2B": [],
-            "3A": [],
-            "3B": [],
-            "4A": [],
-            "4B": []
-        };
+        const coursesConfig = { "0A": [], "0B": [], "1A": units1A, "1B": [], "2A": [], "2B": [], "3A": [], "3B": [], "4A": [], "4B": [] };
 
         let currentSelectedStage = null;
         let cachedUserScores = {};
-        let isAuthRegisterMode = false;
+        let currentLevel = "1A";
+        let db = null;
+        let currentUser = null;
 
-        // =========================================================================
-        // 3. Firebase 身份驗證與初始化
-        // =========================================================================
+        // 2. Firebase 與成績即時讀取監聽
         window.addEventListener('DOMContentLoaded', () => {
             if (typeof firebase !== 'undefined' && firebase.auth) {
+                db = firebase.firestore();
+
                 firebase.auth().onAuthStateChanged((user) => {
                     if (user) {
+                        currentUser = user;
                         document.getElementById('login-modal').classList.add('hidden');
                         document.getElementById('main-app').classList.remove('hidden');
 
@@ -319,8 +326,11 @@
                         document.getElementById('profile-display-name').innerText = displayName;
                         document.getElementById('profile-display-email').innerText = user.email;
 
-                        renderCourseMap("1A");
+                        // ⚡ 開啟 Firestore 即時成績讀取監聽
+                        listenToUserScores(user.uid);
+
                     } else {
+                        currentUser = null;
                         document.getElementById('login-modal').classList.remove('hidden');
                         document.getElementById('main-app').classList.add('hidden');
                     }
@@ -328,13 +338,14 @@
             } else {
                 document.getElementById('login-modal').classList.add('hidden');
                 document.getElementById('main-app').classList.remove('hidden');
-                renderCourseMap("1A");
+                renderCourseMap(currentLevel);
             }
 
-            // Tab 切換
+            // 登入 / 註冊切換
             const tabLogin = document.getElementById('tab-login');
             const tabRegister = document.getElementById('tab-register');
             const btnAuthSubmit = document.getElementById('btn-auth-submit');
+            let isAuthRegisterMode = false;
 
             tabLogin.addEventListener('click', () => {
                 isAuthRegisterMode = false;
@@ -350,7 +361,6 @@
                 btnAuthSubmit.innerText = '註冊並登入';
             });
 
-            // 登入 / 註冊觸發
             btnAuthSubmit.addEventListener('click', () => {
                 const email = document.getElementById('email-input').value.trim();
                 const password = document.getElementById('password-input').value.trim();
@@ -364,21 +374,18 @@
                 }
 
                 if (isAuthRegisterMode) {
-                    firebase.auth().createUserWithEmailAndPassword(email, password)
-                        .catch(err => {
-                            errorMsg.innerText = err.message;
-                            errorMsg.classList.remove('hidden');
-                        });
+                    firebase.auth().createUserWithEmailAndPassword(email, password).catch(err => {
+                        errorMsg.innerText = err.message;
+                        errorMsg.classList.remove('hidden');
+                    });
                 } else {
-                    firebase.auth().signInWithEmailAndPassword(email, password)
-                        .catch(err => {
-                            errorMsg.innerText = '帳號或密碼錯誤';
-                            errorMsg.classList.remove('hidden');
-                        });
+                    firebase.auth().signInWithEmailAndPassword(email, password).catch(err => {
+                        errorMsg.innerText = '帳號或密碼錯誤';
+                        errorMsg.classList.remove('hidden');
+                    });
                 }
             });
 
-            // Google 登入
             document.getElementById('btn-google-login').addEventListener('click', () => {
                 const provider = new firebase.auth.GoogleAuthProvider();
                 firebase.auth().signInWithPopup(provider).catch(err => {
@@ -388,37 +395,76 @@
                 });
             });
 
-            // 登出
             document.getElementById('btn-logout').addEventListener('click', () => {
                 firebase.auth().signOut().then(() => {
                     document.getElementById('modal-profile').classList.add('hidden');
                 });
             });
 
-            // 個人 Modal
             document.getElementById('btn-profile-trigger').addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.remove('hidden');
             });
             document.getElementById('btn-close-profile-modal').addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.add('hidden');
             });
-
-            // 忘記密碼
-            document.getElementById('btn-forgot-password').addEventListener('click', () => {
-                const email = document.getElementById('email-input').value.trim();
-                if (!email) {
-                    alert('請先輸入信箱');
-                    return;
-                }
-                firebase.auth().sendPasswordResetEmail(email).then(() => {
-                    alert('重設密碼信件已寄出！');
-                }).catch(err => alert(err.message));
-            });
         });
 
-        // =========================================================================
-        // 4. 渲染地圖核心邏輯
-        // =========================================================================
+        // 3. 從 Firestore 讀取使用者成績（即時同步）
+        function listenToUserScores(uid) {
+            if (!db) return;
+
+            // 監聽 users/{uid}/scores 或 grades 集合
+            db.collection('users').doc(uid).collection('scores').onSnapshot((snapshot) => {
+                cachedUserScores = {};
+                let totalXP = 0;
+
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const stageCode = doc.id; // 以關卡代碼為 ID
+                    const score = data.score || 0;
+                    cachedUserScores[stageCode] = score;
+                    totalXP += score;
+                });
+
+                document.getElementById('lbl-xp').innerText = totalXP;
+                renderCourseMap(currentLevel); // 自動重繪地圖與分數
+            }, (error) => {
+                console.log("成績讀取失敗:", error);
+                renderCourseMap(currentLevel);
+            });
+        }
+
+        // 4. 載入排行榜數據
+        function loadLeaderboard() {
+            if (!db) return;
+            const content = document.getElementById('leaderboard-content');
+            content.innerHTML = '<div style="text-align:center; color:#9ca3af; padding:20px;">載入中...</div>';
+
+            db.collection('users').orderBy('totalXP', 'desc').limit(10).get().then((snapshot) => {
+                if (snapshot.empty) {
+                    content.innerHTML = '<div style="text-align:center; color:#9ca3af; padding:20px;">尚無排行榜資料</div>';
+                    return;
+                }
+
+                let html = '';
+                let rank = 1;
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    html += `
+                        <div class="leaderboard-item">
+                            <div><strong>#${rank}</strong> ${data.displayName || '匿名玩家'}</div>
+                            <div><i class="fa-solid fa-star" style="color:var(--duo-gold);"></i> ${data.totalXP || 0}</div>
+                        </div>
+                    `;
+                    rank++;
+                });
+                content.innerHTML = html;
+            }).catch(() => {
+                content.innerHTML = '<div style="text-align:center; color:#9ca3af; padding:20px;">暫時無法讀取排行榜</div>';
+            });
+        }
+
+        // 5. 渲染地圖
         function renderCourseMap(level = "1A") {
             const container = document.getElementById('units-map-list');
             if (!container) return;
@@ -497,7 +543,7 @@
             });
         }
 
-        // 開啟遊戲 iframe
+        // 開啟遊戲視圖
         function launchStageGame(stage) {
             document.getElementById('map-view').classList.add('hidden');
             document.getElementById('game-view').classList.remove('hidden');
@@ -508,7 +554,7 @@
             `;
         }
 
-        // 其他彈窗綁定
+        // 事件監聽綁定
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
                 document.getElementById('modal-warmup-ask').classList.add('hidden');
@@ -542,12 +588,22 @@
                 document.getElementById('modal-select-initial-level').classList.add('hidden');
             });
 
-            // 切換程度確認按鈕
             document.getElementById('btn-confirm-initial-level')?.addEventListener('click', () => {
                 const selectedLvl = document.getElementById('initial-level-select').value;
+                currentLevel = selectedLvl;
                 document.getElementById('lbl-user-level').innerText = selectedLvl;
                 renderCourseMap(selectedLvl);
                 document.getElementById('modal-select-initial-level').classList.add('hidden');
+            });
+
+            // 排行榜點擊
+            document.getElementById('btn-leaderboard-trigger')?.addEventListener('click', () => {
+                document.getElementById('modal-leaderboard').classList.remove('hidden');
+                loadLeaderboard();
+            });
+
+            document.getElementById('btn-close-leaderboard-modal')?.addEventListener('click', () => {
+                document.getElementById('modal-leaderboard').classList.add('hidden');
             });
         });
     </script>
