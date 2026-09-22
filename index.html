@@ -148,13 +148,26 @@
         </div>
     </div>
 
-    <!-- 👤 2. 個人檔案 Modal -->
+    <!-- 👤 2. 個人檔案 Modal (新增：試算表對應暱稱設定) -->
     <div id="modal-profile" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-profile-modal"><i class="fa-solid fa-xmark"></i></div>
             <div style="font-size: 3rem; color: var(--duo-blue); margin-bottom: 10px; margin-top: 10px;"><i class="fa-solid fa-circle-user"></i></div>
             <h3 id="profile-display-name" style="margin: 0 0 4px 0;">使用者</h3>
-            <p id="profile-display-email" style="font-size: 0.82rem; color: #6b7280; margin-bottom: 20px;">email@example.com</p>
+            <p id="profile-display-email" style="font-size: 0.82rem; color: #6b7280; margin-bottom: 15px;">email@example.com</p>
+            
+            <!-- 🌟 新增設定：自訂試算表抓取暱稱 -->
+            <div style="background: #f3f4f6; padding: 12px; border-radius: 16px; margin-bottom: 15px; text-align: left;">
+                <label style="font-size: 0.8rem; font-weight: bold; color: #4b5563; display: block; margin-bottom: 4px;">
+                    <i class="fa-solid fa-table"></i> 連動試算表暱稱：
+                </label>
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="sheet-nickname-input" placeholder="輸入遊戲中使用的暱稱 (如: UWEI)" style="margin: 0; font-size: 0.85rem;">
+                    <button id="btn-save-nickname" class="btn-3d btn-3d-primary" style="white-space: nowrap; padding: 0 12px; font-size: 0.8rem !important;">儲存</button>
+                </div>
+                <span style="font-size: 0.72rem; color: #9ca3af; display: block; margin-top: 4px;">* 設定後系統會用此暱稱抓取 SheetBest 成績</span>
+            </div>
+
             <button id="btn-logout" class="btn-3d" style="width: 100%; padding: 10px; background: var(--duo-red); color: white; box-shadow: 0 4px 0 var(--duo-red-shadow);">登出帳號</button>
         </div>
     </div>
@@ -300,8 +313,12 @@
         let cachedUserScores = {};
         let isAuthRegisterMode = false;
 
-        // 取得當前使用者顯示的暱稱（例如 WEI C）
-        function getCurrentUsername() {
+        // 取得當前抓取的暱稱 (優先採用 localStorage 自訂設定，無設定則用登入名稱)
+        function getTargetName() {
+            const savedNickname = localStorage.getItem('sheet_target_nickname');
+            if (savedNickname && savedNickname.trim()) {
+                return savedNickname.trim();
+            }
             const currentUser = firebase.auth().currentUser;
             if (currentUser) {
                 return currentUser.displayName || currentUser.email.split('@')[0];
@@ -314,10 +331,12 @@
         // 2. 成績 API 與暱稱對齊邏輯
         // =========================================================================
         
-        // 從 SheetBest 撈取資料並比對「暱稱」
+        // 從 SheetBest 撈取資料並比對暱稱
         async function fetchUserScores() {
             try {
-                const targetName = getCurrentUsername();
+                const targetName = getTargetName();
+                const currentUser = firebase.auth().currentUser;
+                const userEmail = currentUser ? currentUser.email : null;
 
                 const response = await fetch(SHEETBEST_API_URL);
                 if (!response.ok) throw new Error("API 存取失敗");
@@ -326,11 +345,14 @@
                 cachedUserScores = {};
 
                 data.forEach(row => {
-                    // 抓取試算表中可能的名稱欄位 (如 name, Name, username, nickname 等)
-                    const rowName = (row.name || row.Name || row.username || row.Username || row.nickname || row.email || '').trim().toLowerCase();
+                    const rowName = (row.name || row.Name || row.username || row.Username || row.nickname || '').trim().toLowerCase();
+                    const rowEmail = (row.email || row.Email || '').trim().toLowerCase();
 
-                    // 🌟 核心比對邏輯：只要暱稱一致，就載入該關卡的成績
-                    if (!targetName || rowName === targetName.trim().toLowerCase()) {
+                    // 🌟 核心比對：自訂暱稱相符 OR Email 相符，皆採計！
+                    const isNameMatch = targetName && rowName === targetName.trim().toLowerCase();
+                    const isEmailMatch = userEmail && rowEmail === userEmail.trim().toLowerCase();
+
+                    if (isNameMatch || isEmailMatch) {
                         const stageCode = row.code || row.stageCode || row.Stage;
                         const score = parseInt(row.score || row.Score, 10) || 0;
 
@@ -350,24 +372,26 @@
             }
         }
 
-        // 監聽 iframe (GitHub Pages 遊戲頁面) 傳回來的挑戰分數
+        // 監聽 iframe 傳回的分數
         window.addEventListener('message', async (event) => {
             if (event.data && event.data.type === 'GAME_FINISHED') {
                 const { code, score, name } = event.data;
-                const userName = name || getCurrentUsername() || 'WEI C';
+                const userName = getTargetName() || name || 'WEI C';
+                const currentUser = firebase.auth().currentUser;
 
-                // 1. 更新本地成績快取
+                // 1. 更新本地快取
                 if (!cachedUserScores[code] || score > cachedUserScores[code]) {
                     cachedUserScores[code] = score;
                 }
 
-                // 2. 上傳成績至 SheetBest，同時帶上 name 欄位
+                // 2. 上傳至 SheetBest
                 try {
                     await fetch(SHEETBEST_API_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             name: userName,
+                            email: currentUser ? currentUser.email : '',
                             code: code,
                             score: score,
                             updatedAt: new Date().toISOString()
@@ -377,7 +401,7 @@
                     console.error("寫入成績至 API 失敗:", err);
                 }
 
-                // 3. 即時刷新地圖解鎖關卡
+                // 3. 刷新地圖
                 const activeLevel = document.getElementById('lbl-user-level').innerText || "1A";
                 renderCourseMap(activeLevel);
             }
@@ -387,6 +411,19 @@
         // 3. Firebase 身份驗證初始化
         // =========================================================================
         window.addEventListener('DOMContentLoaded', () => {
+            // 初始化個人檔案中的自訂暱稱輸入框
+            const savedNickname = localStorage.getItem('sheet_target_nickname') || '';
+            const nicknameInput = document.getElementById('sheet-nickname-input');
+            if (nicknameInput) nicknameInput.value = savedNickname;
+
+            // 儲存自訂暱稱
+            document.getElementById('btn-save-nickname')?.addEventListener('click', () => {
+                const val = nicknameInput.value.trim();
+                localStorage.setItem('sheet_target_nickname', val);
+                alert(`已儲存連動暱稱：${val || '預設名稱'}\n正在重新為您同步試算表成績！`);
+                fetchUserScores();
+            });
+
             if (typeof firebase !== 'undefined' && firebase.auth) {
                 firebase.auth().onAuthStateChanged((user) => {
                     if (user) {
@@ -410,7 +447,7 @@
                 fetchUserScores();
             }
 
-            // Tab 頁籤切換
+            // Auth Modal Controls
             const tabLogin = document.getElementById('tab-login');
             const tabRegister = document.getElementById('tab-register');
             const btnAuthSubmit = document.getElementById('btn-auth-submit');
@@ -429,7 +466,6 @@
                 btnAuthSubmit.innerText = '註冊並登入';
             });
 
-            // 登入 / 註冊觸發
             btnAuthSubmit.addEventListener('click', () => {
                 const email = document.getElementById('email-input').value.trim();
                 const password = document.getElementById('password-input').value.trim();
@@ -457,7 +493,6 @@
                 }
             });
 
-            // Google 登入
             document.getElementById('btn-google-login').addEventListener('click', () => {
                 const provider = new firebase.auth.GoogleAuthProvider();
                 firebase.auth().signInWithPopup(provider).catch(err => {
@@ -467,14 +502,12 @@
                 });
             });
 
-            // 登出
             document.getElementById('btn-logout').addEventListener('click', () => {
                 firebase.auth().signOut().then(() => {
                     document.getElementById('modal-profile').classList.add('hidden');
                 });
             });
 
-            // 個人 Modal
             document.getElementById('btn-profile-trigger').addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.remove('hidden');
             });
@@ -482,7 +515,6 @@
                 document.getElementById('modal-profile').classList.add('hidden');
             });
 
-            // 忘記密碼
             document.getElementById('btn-forgot-password').addEventListener('click', () => {
                 const email = document.getElementById('email-input').value.trim();
                 if (!email) {
@@ -534,7 +566,7 @@
                     const score = cachedUserScores[stage.code] || 0;
                     let isLocked = false;
 
-                    // 判斷前置解鎖條件：填空挑戰是否有分數紀錄 (> 0 即解鎖)
+                    // 解鎖判斷：填空關卡是否有得分
                     if (stage.reqUnlock) {
                         const parentScore = cachedUserScores[stage.reqUnlock] || 0;
                         if (parentScore <= 0) isLocked = true;
@@ -588,7 +620,7 @@
             `;
         }
 
-        // 介面控制綁定
+        // 介面按鈕事件綁定
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
                 document.getElementById('modal-warmup-ask').classList.add('hidden');
