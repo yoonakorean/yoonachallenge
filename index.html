@@ -148,7 +148,7 @@
         </div>
     </div>
 
-    <!-- 👤 2. 個人檔案 Modal (新增：試算表對應暱稱設定) -->
+    <!-- 👤 2. 個人檔案 Modal -->
     <div id="modal-profile" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-profile-modal"><i class="fa-solid fa-xmark"></i></div>
@@ -156,7 +156,6 @@
             <h3 id="profile-display-name" style="margin: 0 0 4px 0;">使用者</h3>
             <p id="profile-display-email" style="font-size: 0.82rem; color: #6b7280; margin-bottom: 15px;">email@example.com</p>
             
-            <!-- 🌟 新增設定：自訂試算表抓取暱稱 -->
             <div style="background: #f3f4f6; padding: 12px; border-radius: 16px; margin-bottom: 15px; text-align: left;">
                 <label style="font-size: 0.8rem; font-weight: bold; color: #4b5563; display: block; margin-bottom: 4px;">
                     <i class="fa-solid fa-table"></i> 連動試算表暱稱：
@@ -177,7 +176,7 @@
         <div class="custom-modal-card">
             <div style="font-size: 2.8rem; color: #f59e0b; margin-bottom: 10px;"><i class="fa-solid fa-lock"></i></div>
             <h3 style="margin: 0 0 8px 0; color: #1f2937;">關卡鎖定中</h3>
-            <p style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">需要先完成「填空挑戰」才能解鎖聽打挑戰唷！</p>
+            <p style="margin: 0 0 20px 0; color: #6b7280; font-size: 0.85rem;">需要先完成「填空挑戰」並達到 80 分以上才能解鎖聽打挑戰唷！</p>
             <button id="btn-close-locked-modal" class="btn-3d btn-3d-primary" style="width: 100%; padding: 10px;">我知道了</button>
         </div>
     </div>
@@ -267,9 +266,10 @@
         // SheetBest API 設定
         const SHEETBEST_API_URL = "https://api.sheetbest.com/sheets/6609511a-f588-4e4f-bd2b-ed551cab8770";
 
-        // =========================================================================
-        // 1. 1A 程度 17 個單元資料庫生成
-        // =========================================================================
+        // PASS 分數門檻：80 分
+        const PASS_SCORE = 80;
+
+        // 1A 程度 17 個單元資料庫生成
         const units1A = [];
         for (let i = 1; i <= 17; i++) {
             const numStr = i < 10 ? '0' + i : i;
@@ -302,7 +302,6 @@
             });
         }
 
-        // 程度資料庫總表
         const coursesConfig = {
             "0A": [], "0B": [], "1A": units1A, "1B": [],
             "2A": [], "2B": [], "3A": [], "3B": [],
@@ -313,7 +312,6 @@
         let cachedUserScores = {};
         let isAuthRegisterMode = false;
 
-        // 取得當前抓取的暱稱 (優先採用 localStorage 自訂設定，無設定則用登入名稱)
         function getTargetName() {
             const savedNickname = localStorage.getItem('sheet_target_nickname');
             if (savedNickname && savedNickname.trim()) {
@@ -328,10 +326,8 @@
         }
 
         // =========================================================================
-        // 2. 成績 API 與暱稱對齊邏輯
+        // 🎯 核心修正：正確抓取 nickname, gametitle, score
         // =========================================================================
-        
-        // 從 SheetBest 撈取資料並比對暱稱
         async function fetchUserScores() {
             try {
                 const targetName = getTargetName();
@@ -345,16 +341,20 @@
                 cachedUserScores = {};
 
                 data.forEach(row => {
-                    const rowName = (row.name || row.Name || row.username || row.Username || row.nickname || '').trim().toLowerCase();
-                    const rowEmail = (row.email || row.Email || '').trim().toLowerCase();
+                    // 🎯 優先對應你的試算表欄位：nickname
+                    const rowName = (row.nickname || row.name || row.Name || row.username || '').toString().trim().toLowerCase();
+                    const rowEmail = (row.email || row.Email || '').toString().trim().toLowerCase();
 
-                    // 🌟 核心比對：自訂暱稱相符 OR Email 相符，皆採計！
-                    const isNameMatch = targetName && rowName === targetName.trim().toLowerCase();
-                    const isEmailMatch = userEmail && rowEmail === userEmail.trim().toLowerCase();
+                    const targetNameLower = targetName ? targetName.trim().toLowerCase() : '';
+                    const targetEmailLower = userEmail ? userEmail.trim().toLowerCase() : '';
+
+                    const isNameMatch = targetNameLower && rowName === targetNameLower;
+                    const isEmailMatch = targetEmailLower && rowEmail === targetEmailLower;
 
                     if (isNameMatch || isEmailMatch) {
-                        const stageCode = row.code || row.stageCode || row.Stage;
-                        const score = parseInt(row.score || row.Score, 10) || 0;
+                        // 🎯 優先對應你的試算表欄位：gametitle 與 score
+                        const stageCode = (row.gametitle || row.code || row.stageCode || row.Stage || '').toString().trim();
+                        const score = parseInt(row.score || row.Score || 0, 10) || 0;
 
                         if (stageCode) {
                             if (!cachedUserScores[stageCode] || score > cachedUserScores[stageCode]) {
@@ -364,7 +364,7 @@
                     }
                 });
 
-                // 重新畫地圖
+                // 重新渲染畫面地圖
                 const activeLevel = document.getElementById('lbl-user-level').innerText || "1A";
                 renderCourseMap(activeLevel);
             } catch (error) {
@@ -372,27 +372,26 @@
             }
         }
 
-        // 監聽 iframe 傳回的分數
+        // 監聽 iframe 遊戲完成事件
         window.addEventListener('message', async (event) => {
             if (event.data && event.data.type === 'GAME_FINISHED') {
                 const { code, score, name } = event.data;
-                const userName = getTargetName() || name || 'WEI C';
+                const userName = getTargetName() || name || 'UWEI';
                 const currentUser = firebase.auth().currentUser;
 
-                // 1. 更新本地快取
                 if (!cachedUserScores[code] || score > cachedUserScores[code]) {
                     cachedUserScores[code] = score;
                 }
 
-                // 2. 上傳至 SheetBest
                 try {
+                    // 寫入符合你 Google 試算表欄位的 JSON 格式
                     await fetch(SHEETBEST_API_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            name: userName,
+                            nickname: userName,
                             email: currentUser ? currentUser.email : '',
-                            code: code,
+                            gametitle: code,
                             score: score,
                             updatedAt: new Date().toISOString()
                         })
@@ -401,26 +400,120 @@
                     console.error("寫入成績至 API 失敗:", err);
                 }
 
-                // 3. 刷新地圖
                 const activeLevel = document.getElementById('lbl-user-level').innerText || "1A";
                 renderCourseMap(activeLevel);
             }
         });
 
         // =========================================================================
-        // 3. Firebase 身份驗證初始化
+        // 地圖渲染與 80 分解鎖邏輯
+        // =========================================================================
+        function renderCourseMap(level = "1A") {
+            const container = document.getElementById('units-map-list');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const currentCourseData = coursesConfig[level] || [];
+
+            if (currentCourseData.length === 0) {
+                container.innerHTML = `<div style="text-align:center; color:#9ca3af; padding:60px 0; font-weight:bold;">${level} 程度關卡籌備中，敬請期待！</div>`;
+                return;
+            }
+
+            currentCourseData.forEach(unit => {
+                const card = document.createElement('div');
+                card.className = 'unit-card';
+
+                card.innerHTML = `
+                    <div class="unit-header-bar">
+                        <div class="unit-header-title">${unit.title}</div>
+                        <div style="font-size:0.85rem;"><i class="fa-solid fa-book"></i> 單元 11-${unit.unitNum}-1</div>
+                    </div>
+                `;
+
+                const col = document.createElement('div');
+                col.className = 'activity-column';
+
+                unit.stages.forEach(stage => {
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'activity-node-wrapper';
+
+                    const btn = document.createElement('button');
+                    btn.className = 'activity-node';
+
+                    const score = cachedUserScores[stage.code] || 0;
+                    let isLocked = false;
+
+                    // 解鎖條件：前置關卡分數必須 >= 80 分
+                    if (stage.reqUnlock) {
+                        const parentScore = cachedUserScores[stage.reqUnlock] || 0;
+                        if (parentScore < PASS_SCORE) {
+                            isLocked = true;
+                        }
+                    }
+
+                    if (isLocked) {
+                        btn.classList.add('status-locked');
+                        btn.innerHTML = `<i class="fa-solid fa-lock"></i>`;
+                        btn.onclick = () => {
+                            document.getElementById('modal-locked').classList.remove('hidden');
+                        };
+                    } else {
+                        // >= 80 分顯示黃金完成狀態
+                        if (score >= PASS_SCORE) {
+                            btn.classList.add('status-completed');
+                        }
+                        btn.innerHTML = `<i class="fa-solid ${stage.icon}"></i>`;
+                        btn.onclick = () => {
+                            currentSelectedStage = stage;
+                            document.getElementById('modal-warmup-ask').classList.remove('hidden');
+                        };
+                    }
+
+                    wrapper.appendChild(btn);
+
+                    const lbl = document.createElement('div');
+                    lbl.className = 'activity-label';
+                    lbl.innerText = stage.name;
+                    wrapper.appendChild(lbl);
+
+                    if (score > 0) {
+                        const badge = document.createElement('div');
+                        badge.className = 'score-badge';
+                        badge.innerText = `${score}分`;
+                        wrapper.appendChild(badge);
+                    }
+
+                    col.appendChild(wrapper);
+                });
+
+                card.appendChild(col);
+                container.appendChild(card);
+            });
+        }
+
+        function launchStageGame(stage) {
+            document.getElementById('map-view').classList.add('hidden');
+            document.getElementById('game-view').classList.remove('hidden');
+
+            document.getElementById('game-title').innerText = stage.code;
+            document.getElementById('activity-player-content').innerHTML = `
+                <iframe src="${stage.link}" style="width:100%; height:100%; border:none;" allow="microphone; autoplay;"></iframe>
+            `;
+        }
+
+        // =========================================================================
+        // DOM 初始化與事件處理
         // =========================================================================
         window.addEventListener('DOMContentLoaded', () => {
-            // 初始化個人檔案中的自訂暱稱輸入框
-            const savedNickname = localStorage.getItem('sheet_target_nickname') || '';
+            const savedNickname = localStorage.getItem('sheet_target_nickname') || 'UWEI';
             const nicknameInput = document.getElementById('sheet-nickname-input');
             if (nicknameInput) nicknameInput.value = savedNickname;
 
-            // 儲存自訂暱稱
             document.getElementById('btn-save-nickname')?.addEventListener('click', () => {
                 const val = nicknameInput.value.trim();
                 localStorage.setItem('sheet_target_nickname', val);
-                alert(`已儲存連動暱稱：${val || '預設名稱'}\n正在重新為您同步試算表成績！`);
+                alert(`已儲存暱稱：${val || '預設名稱'}\n正在為您同步成績...`);
                 fetchUserScores();
             });
 
@@ -447,7 +540,6 @@
                 fetchUserScores();
             }
 
-            // Auth Modal Controls
             const tabLogin = document.getElementById('tab-login');
             const tabRegister = document.getElementById('tab-register');
             const btnAuthSubmit = document.getElementById('btn-auth-submit');
@@ -515,113 +607,6 @@
                 document.getElementById('modal-profile').classList.add('hidden');
             });
 
-            document.getElementById('btn-forgot-password').addEventListener('click', () => {
-                const email = document.getElementById('email-input').value.trim();
-                if (!email) {
-                    alert('請先輸入信箱');
-                    return;
-                }
-                firebase.auth().sendPasswordResetEmail(email).then(() => {
-                    alert('重設密碼信件已寄出！');
-                }).catch(err => alert(err.message));
-            });
-        });
-
-        // =========================================================================
-        // 4. 地圖渲染邏輯
-        // =========================================================================
-        function renderCourseMap(level = "1A") {
-            const container = document.getElementById('units-map-list');
-            if (!container) return;
-            container.innerHTML = '';
-
-            const currentCourseData = coursesConfig[level] || [];
-
-            if (currentCourseData.length === 0) {
-                container.innerHTML = `<div style="text-align:center; color:#9ca3af; padding:60px 0; font-weight:bold;">${level} 程度關卡籌備中，敬請期待！</div>`;
-                return;
-            }
-
-            currentCourseData.forEach(unit => {
-                const card = document.createElement('div');
-                card.className = 'unit-card';
-
-                card.innerHTML = `
-                    <div class="unit-header-bar">
-                        <div class="unit-header-title">${unit.title}</div>
-                        <div style="font-size:0.85rem;"><i class="fa-solid fa-book"></i> 單元 11-${unit.unitNum}-1</div>
-                    </div>
-                `;
-
-                const col = document.createElement('div');
-                col.className = 'activity-column';
-
-                unit.stages.forEach(stage => {
-                    const wrapper = document.createElement('div');
-                    wrapper.className = 'activity-node-wrapper';
-
-                    const btn = document.createElement('button');
-                    btn.className = 'activity-node';
-
-                    const score = cachedUserScores[stage.code] || 0;
-                    let isLocked = false;
-
-                    // 解鎖判斷：填空關卡是否有得分
-                    if (stage.reqUnlock) {
-                        const parentScore = cachedUserScores[stage.reqUnlock] || 0;
-                        if (parentScore <= 0) isLocked = true;
-                    }
-
-                    if (isLocked) {
-                        btn.classList.add('status-locked');
-                        btn.innerHTML = `<i class="fa-solid fa-lock"></i>`;
-                        btn.onclick = () => {
-                            document.getElementById('modal-locked').classList.remove('hidden');
-                        };
-                    } else {
-                        if (score >= 80) btn.classList.add('status-completed');
-                        btn.innerHTML = `<i class="fa-solid ${stage.icon}"></i>`;
-                        btn.onclick = () => {
-                            currentSelectedStage = stage;
-                            document.getElementById('modal-warmup-ask').classList.remove('hidden');
-                        };
-                    }
-
-                    wrapper.appendChild(btn);
-
-                    const lbl = document.createElement('div');
-                    lbl.className = 'activity-label';
-                    lbl.innerText = stage.name;
-                    wrapper.appendChild(lbl);
-
-                    if (score > 0) {
-                        const badge = document.createElement('div');
-                        badge.className = 'score-badge';
-                        badge.innerText = `${score}分`;
-                        wrapper.appendChild(badge);
-                    }
-
-                    col.appendChild(wrapper);
-                });
-
-                card.appendChild(col);
-                container.appendChild(card);
-            });
-        }
-
-        // 開啟遊戲 iframe
-        function launchStageGame(stage) {
-            document.getElementById('map-view').classList.add('hidden');
-            document.getElementById('game-view').classList.remove('hidden');
-
-            document.getElementById('game-title').innerText = stage.code;
-            document.getElementById('activity-player-content').innerHTML = `
-                <iframe src="${stage.link}" style="width:100%; height:100%; border:none;" allow="microphone; autoplay;"></iframe>
-            `;
-        }
-
-        // 介面按鈕事件綁定
-        window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
                 document.getElementById('modal-warmup-ask').classList.add('hidden');
                 if (currentSelectedStage) launchStageGame(currentSelectedStage);
