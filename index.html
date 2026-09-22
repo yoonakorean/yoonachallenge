@@ -148,7 +148,7 @@
         </div>
     </div>
 
-    <!-- 👤 2. 個人檔案 Modal (登出區塊) -->
+    <!-- 👤 2. 個人檔案 Modal -->
     <div id="modal-profile" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-profile-modal"><i class="fa-solid fa-xmark"></i></div>
@@ -183,15 +183,22 @@
         </div>
     </div>
 
-    <!-- 🎓 5. 切換程度 Modal -->
+    <!-- 🎓 5. 切換程度 Modal (已擴充 0A ~ 4B) -->
     <div id="modal-select-initial-level" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-level-modal"><i class="fa-solid fa-xmark"></i></div>
             <h3 style="margin: 10px 0 8px 0; color: #1f2937;">選擇課程程度</h3>
             <select id="initial-level-select" style="font-weight: bold; margin-bottom: 15px;">
-                <option value="1A" selected>1A 基礎級</option>
-                <option value="1B">1B 初級 (籌備中)</option>
-                <option value="2A">2A 中初級 (籌備中)</option>
+                <option value="0A">0A 入門級 A</option>
+                <option value="0B">0B 入門級 B</option>
+                <option value="1A" selected>1A 基礎級 A</option>
+                <option value="1B">1B 基礎級 B</option>
+                <option value="2A">2A 初級 A</option>
+                <option value="2B">2B 初級 B</option>
+                <option value="3A">3A 中級 A</option>
+                <option value="3B">3B 中級 B</option>
+                <option value="4A">4A 高級 A</option>
+                <option value="4B">4B 高級 B</option>
             </select>
             <button id="btn-confirm-initial-level" class="btn-3d btn-3d-primary" style="width: 100%; padding: 10px;">確定切換</button>
         </div>
@@ -245,7 +252,7 @@
 
     <script>
         // =========================================================================
-        // 1. 1A 程度 17 個單元資料庫
+        // 1. 1A 程度 17 個單元資料庫生成
         // =========================================================================
         const units1A = [];
         for (let i = 1; i <= 17; i++) {
@@ -279,20 +286,31 @@
             });
         }
 
-        const coursesConfig = { "1A": units1A, "1B": [], "2A": [] };
+        // 🌟 2. 程度資料庫總表（支援 0A 到 4B）
+        const coursesConfig = {
+            "0A": [],
+            "0B": [],
+            "1A": units1A,
+            "1B": [],
+            "2A": [],
+            "2B": [],
+            "3A": [],
+            "3B": [],
+            "4A": [],
+            "4B": []
+        };
+
         let currentSelectedStage = null;
         let cachedUserScores = {};
         let isAuthRegisterMode = false;
 
         // =========================================================================
-        // 2. Firebase 身份驗證邏輯
+        // 3. Firebase 身份驗證與初始化
         // =========================================================================
         window.addEventListener('DOMContentLoaded', () => {
-            // 初始化 Firebase Status 監聽
             if (typeof firebase !== 'undefined' && firebase.auth) {
                 firebase.auth().onAuthStateChanged((user) => {
                     if (user) {
-                        // 使用者已登入
                         document.getElementById('login-modal').classList.add('hidden');
                         document.getElementById('main-app').classList.remove('hidden');
 
@@ -303,19 +321,17 @@
 
                         renderCourseMap("1A");
                     } else {
-                        // 使用者未登入
                         document.getElementById('login-modal').classList.remove('hidden');
                         document.getElementById('main-app').classList.add('hidden');
                     }
                 });
             } else {
-                // 如果沒有設定 Firebase 相關金鑰，預設顯示主頁
                 document.getElementById('login-modal').classList.add('hidden');
                 document.getElementById('main-app').classList.remove('hidden');
                 renderCourseMap("1A");
             }
 
-            // 登入 / 註冊 Tab 切換
+            // Tab 切換
             const tabLogin = document.getElementById('tab-login');
             const tabRegister = document.getElementById('tab-register');
             const btnAuthSubmit = document.getElementById('btn-auth-submit');
@@ -334,7 +350,7 @@
                 btnAuthSubmit.innerText = '註冊並登入';
             });
 
-            // 提交 Email 登入 / 註冊
+            // 登入 / 註冊觸發
             btnAuthSubmit.addEventListener('click', () => {
                 const email = document.getElementById('email-input').value.trim();
                 const password = document.getElementById('password-input').value.trim();
@@ -379,7 +395,7 @@
                 });
             });
 
-            // 個人檔案 Modal 開關
+            // 個人 Modal
             document.getElementById('btn-profile-trigger').addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.remove('hidden');
             });
@@ -401,7 +417,7 @@
         });
 
         // =========================================================================
-        // 3. 渲染地圖核心邏輯
+        // 4. 渲染地圖核心邏輯
         // =========================================================================
         function renderCourseMap(level = "1A") {
             const container = document.getElementById('units-map-list');
@@ -411,7 +427,7 @@
             const currentCourseData = coursesConfig[level] || [];
 
             if (currentCourseData.length === 0) {
-                container.innerHTML = `<div style="text-align:center; color:#9ca3af; padding:40px 0;">該程度尚在籌備中，敬請期待！</div>`;
+                container.innerHTML = `<div style="text-align:center; color:#9ca3af; padding:60px 0; font-weight:bold;">${level} 程度關卡籌備中，敬請期待！</div>`;
                 return;
             }
 
@@ -481,7 +497,7 @@
             });
         }
 
-        // 開啟遊戲視圖 (iframe)
+        // 開啟遊戲 iframe
         function launchStageGame(stage) {
             document.getElementById('map-view').classList.add('hidden');
             document.getElementById('game-view').classList.remove('hidden');
@@ -492,7 +508,7 @@
             `;
         }
 
-        // 綁定其他選單 Modal 事件
+        // 其他彈窗綁定
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
                 document.getElementById('modal-warmup-ask').classList.add('hidden');
@@ -526,6 +542,7 @@
                 document.getElementById('modal-select-initial-level').classList.add('hidden');
             });
 
+            // 切換程度確認按鈕
             document.getElementById('btn-confirm-initial-level')?.addEventListener('click', () => {
                 const selectedLvl = document.getElementById('initial-level-select').value;
                 document.getElementById('lbl-user-level').innerText = selectedLvl;
