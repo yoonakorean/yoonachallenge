@@ -183,7 +183,7 @@
         </div>
     </div>
 
-    <!-- 🎓 5. 切換程度 Modal (已擴充 0A ~ 4B) -->
+    <!-- 🎓 5. 切換程度 Modal -->
     <div id="modal-select-initial-level" class="custom-modal hidden">
         <div class="custom-modal-card">
             <div class="close-icon-circle" id="btn-close-level-modal"><i class="fa-solid fa-xmark"></i></div>
@@ -238,7 +238,7 @@
             <div id="units-map-list" style="width: 100%; display: flex; flex-direction: column; gap: 16px;"></div>
         </div>
 
-        <!-- 遊戲遊戲視圖 -->
+        <!-- 遊戲視圖 -->
         <div id="game-view" class="hidden map-container" style="padding: 10px;">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 8px;">
                 <button id="btn-back-to-map" class="btn-3d btn-3d-secondary" style="padding: 6px 14px;">
@@ -251,6 +251,9 @@
     </div>
 
     <script>
+        // API 設定
+        const SHEETBEST_API_URL = "https://api.sheetbest.com/sheets/6609511a-f588-4e4f-bd2b-ed551cab8770";
+
         // =========================================================================
         // 1. 1A 程度 17 個單元資料庫生成
         // =========================================================================
@@ -286,18 +289,11 @@
             });
         }
 
-        // 🌟 2. 程度資料庫總表（支援 0A 到 4B）
+        // 🌟 2. 程度資料庫總表
         const coursesConfig = {
-            "0A": [],
-            "0B": [],
-            "1A": units1A,
-            "1B": [],
-            "2A": [],
-            "2B": [],
-            "3A": [],
-            "3B": [],
-            "4A": [],
-            "4B": []
+            "0A": [], "0B": [], "1A": units1A, "1B": [],
+            "2A": [], "2B": [], "3A": [], "3B": [],
+            "4A": [], "4B": []
         };
 
         let currentSelectedStage = null;
@@ -305,7 +301,79 @@
         let isAuthRegisterMode = false;
 
         // =========================================================================
-        // 3. Firebase 身份驗證與初始化
+        // 3. 成績 API 與數據同步邏輯
+        // =========================================================================
+        
+        // 從 SheetBest 讀取歷史成績
+        async function fetchUserScores() {
+            try {
+                const currentUser = firebase.auth().currentUser;
+                const userEmail = currentUser ? currentUser.email : null;
+
+                const response = await fetch(SHEETBEST_API_URL);
+                if (!response.ok) throw new Error("API 存取失敗");
+                
+                const data = await response.json();
+                cachedUserScores = {};
+
+                data.forEach(row => {
+                    // 如果欄位包含 email，比對該使用者的成績；若無則通用採計
+                    if (!userEmail || !row.email || row.email === userEmail) {
+                        const stageCode = row.code || row.stageCode;
+                        const score = parseInt(row.score, 10) || 0;
+
+                        // 保留單一關卡最高分
+                        if (stageCode) {
+                            if (!cachedUserScores[stageCode] || score > cachedUserScores[stageCode]) {
+                                cachedUserScores[stageCode] = score;
+                            }
+                        }
+                    }
+                });
+
+                // 重新渲染當前地圖
+                const activeLevel = document.getElementById('lbl-user-level').innerText || "1A";
+                renderCourseMap(activeLevel);
+            } catch (error) {
+                console.error("載入成績失敗:", error);
+            }
+        }
+
+        // 監聽 iframe 遊戲完成通知訊息 (跨頁面傳送)
+        window.addEventListener('message', async (event) => {
+            if (event.data && event.data.type === 'GAME_FINISHED') {
+                const { code, score } = event.data;
+                const currentUser = firebase.auth().currentUser;
+
+                // 1. 更新本地快取
+                if (!cachedUserScores[code] || score > cachedUserScores[code]) {
+                    cachedUserScores[code] = score;
+                }
+
+                // 2. 寫入 SheetBest API 試算表
+                try {
+                    await fetch(SHEETBEST_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: currentUser ? currentUser.email : 'guest',
+                            code: code,
+                            score: score,
+                            updatedAt: new Date().toISOString()
+                        })
+                    });
+                } catch (err) {
+                    console.error("寫入成績至 API 失敗:", err);
+                }
+
+                // 3. 重新畫地圖解鎖關卡
+                const activeLevel = document.getElementById('lbl-user-level').innerText || "1A";
+                renderCourseMap(activeLevel);
+            }
+        });
+
+        // =========================================================================
+        // 4. Firebase 身份驗證與初始化
         // =========================================================================
         window.addEventListener('DOMContentLoaded', () => {
             if (typeof firebase !== 'undefined' && firebase.auth) {
@@ -319,7 +387,8 @@
                         document.getElementById('profile-display-name').innerText = displayName;
                         document.getElementById('profile-display-email').innerText = user.email;
 
-                        renderCourseMap("1A");
+                        // 登入成功後讀取成績
+                        fetchUserScores();
                     } else {
                         document.getElementById('login-modal').classList.remove('hidden');
                         document.getElementById('main-app').classList.add('hidden');
@@ -328,7 +397,7 @@
             } else {
                 document.getElementById('login-modal').classList.add('hidden');
                 document.getElementById('main-app').classList.remove('hidden');
-                renderCourseMap("1A");
+                fetchUserScores();
             }
 
             // Tab 切換
@@ -417,7 +486,7 @@
         });
 
         // =========================================================================
-        // 4. 渲染地圖核心邏輯
+        // 5. 渲染地圖核心邏輯
         // =========================================================================
         function renderCourseMap(level = "1A") {
             const container = document.getElementById('units-map-list');
@@ -455,6 +524,7 @@
                     const score = cachedUserScores[stage.code] || 0;
                     let isLocked = false;
 
+                    // 檢查前置條件：若 reqUnlock 關卡未達 1 分（代表未完成），則鎖定
                     if (stage.reqUnlock) {
                         const parentScore = cachedUserScores[stage.reqUnlock] || 0;
                         if (parentScore <= 0) isLocked = true;
@@ -508,7 +578,7 @@
             `;
         }
 
-        // 其他彈窗綁定
+        // 按鈕與彈窗綁定
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
                 document.getElementById('modal-warmup-ask').classList.add('hidden');
