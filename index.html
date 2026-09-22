@@ -43,7 +43,6 @@
             box-sizing: border-box;
         }
 
-        /* 頂部資訊列 */
         .user-meta-bar {
             display: flex; justify-content: space-between; align-items: center;
             padding: 12px 14px; background: #ffffff; border-bottom: 2px solid #e5e7eb;
@@ -110,7 +109,6 @@
         .activity-label { font-size: 0.75rem; font-weight: bold; color: #4b5563; text-align: center; }
         .score-badge { font-size: 0.7rem; color: #15803d; font-weight: 800; background: #dcfce7; padding: 2px 6px; border-radius: 8px; margin-top: 2px; }
 
-        /* 排行榜樣式 */
         .leaderboard-list { text-align: left; margin-top: 15px; max-height: 250px; overflow-y: auto; }
         .leaderboard-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; font-size: 0.9rem; }
         .leaderboard-item:first-child { font-weight: bold; color: var(--duo-gold); }
@@ -234,7 +232,6 @@
                 <span id="lbl-login-days">1</span> 天
             </div>
 
-            <!-- 點擊星號開啟排行榜 -->
             <div class="user-meta-item" id="btn-leaderboard-trigger">
                 <i class="fa-solid fa-star" style="color: var(--duo-gold); font-size: 1.05rem;"></i>
                 <span id="lbl-xp">0</span>
@@ -256,7 +253,7 @@
             <div id="units-map-list" style="width: 100%; display: flex; flex-direction: column; gap: 16px;"></div>
         </div>
 
-        <!-- 遊戲遊戲視圖 -->
+        <!-- 遊戲視圖 -->
         <div id="game-view" class="hidden map-container" style="padding: 10px;">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 8px;">
                 <button id="btn-back-to-map" class="btn-3d btn-3d-secondary" style="padding: 6px 14px;">
@@ -307,17 +304,21 @@
         let currentSelectedStage = null;
         let cachedUserScores = {};
         let currentLevel = "1A";
+        let isAuthRegisterMode = false;
         let db = null;
-        let currentUser = null;
 
-        // 2. Firebase 與成績即時讀取監聽
+        // 2. 統一初始化與事件綁定
         window.addEventListener('DOMContentLoaded', () => {
+            initAuth();
+            bindEventListeners();
+        });
+
+        function initAuth() {
             if (typeof firebase !== 'undefined' && firebase.auth) {
                 db = firebase.firestore();
 
                 firebase.auth().onAuthStateChanged((user) => {
                     if (user) {
-                        currentUser = user;
                         document.getElementById('login-modal').classList.add('hidden');
                         document.getElementById('main-app').classList.remove('hidden');
 
@@ -326,11 +327,8 @@
                         document.getElementById('profile-display-name').innerText = displayName;
                         document.getElementById('profile-display-email').innerText = user.email;
 
-                        // ⚡ 開啟 Firestore 即時成績讀取監聽
                         listenToUserScores(user.uid);
-
                     } else {
-                        currentUser = null;
                         document.getElementById('login-modal').classList.remove('hidden');
                         document.getElementById('main-app').classList.add('hidden');
                     }
@@ -340,28 +338,32 @@
                 document.getElementById('main-app').classList.remove('hidden');
                 renderCourseMap(currentLevel);
             }
+        }
 
-            // 登入 / 註冊切換
+        function bindEventListeners() {
+            // 登入 / 註冊 Tab 切換
             const tabLogin = document.getElementById('tab-login');
             const tabRegister = document.getElementById('tab-register');
             const btnAuthSubmit = document.getElementById('btn-auth-submit');
-            let isAuthRegisterMode = false;
 
-            tabLogin.addEventListener('click', () => {
-                isAuthRegisterMode = false;
-                tabLogin.classList.add('active');
-                tabRegister.classList.remove('active');
-                btnAuthSubmit.innerText = '登入';
-            });
+            if (tabLogin && tabRegister) {
+                tabLogin.addEventListener('click', () => {
+                    isAuthRegisterMode = false;
+                    tabLogin.classList.add('active');
+                    tabRegister.classList.remove('active');
+                    btnAuthSubmit.innerText = '登入';
+                });
 
-            tabRegister.addEventListener('click', () => {
-                isAuthRegisterMode = true;
-                tabRegister.classList.add('active');
-                tabLogin.classList.remove('active');
-                btnAuthSubmit.innerText = '註冊並登入';
-            });
+                tabRegister.addEventListener('click', () => {
+                    isAuthRegisterMode = true;
+                    tabRegister.classList.add('active');
+                    tabLogin.classList.remove('active');
+                    btnAuthSubmit.innerText = '註冊並登入';
+                });
+            }
 
-            btnAuthSubmit.addEventListener('click', () => {
+            // 提交登入/註冊
+            btnAuthSubmit?.addEventListener('click', () => {
                 const email = document.getElementById('email-input').value.trim();
                 const password = document.getElementById('password-input').value.trim();
                 const errorMsg = document.getElementById('login-error-msg');
@@ -386,7 +388,8 @@
                 }
             });
 
-            document.getElementById('btn-google-login').addEventListener('click', () => {
+            // Google 登入
+            document.getElementById('btn-google-login')?.addEventListener('click', () => {
                 const provider = new firebase.auth.GoogleAuthProvider();
                 firebase.auth().signInWithPopup(provider).catch(err => {
                     const errorMsg = document.getElementById('login-error-msg');
@@ -395,46 +398,107 @@
                 });
             });
 
-            document.getElementById('btn-logout').addEventListener('click', () => {
+            // 忘記密碼
+            document.getElementById('btn-forgot-password')?.addEventListener('click', () => {
+                const email = document.getElementById('email-input').value.trim();
+                if (!email) {
+                    alert('請先輸入信箱');
+                    return;
+                }
+                firebase.auth().sendPasswordResetEmail(email).then(() => {
+                    alert('重設密碼信件已寄出！');
+                }).catch(err => alert(err.message));
+            });
+
+            // 登出
+            document.getElementById('btn-logout')?.addEventListener('click', () => {
                 firebase.auth().signOut().then(() => {
                     document.getElementById('modal-profile').classList.add('hidden');
                 });
             });
 
-            document.getElementById('btn-profile-trigger').addEventListener('click', () => {
+            // 個人 Modal
+            document.getElementById('btn-profile-trigger')?.addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.remove('hidden');
             });
-            document.getElementById('btn-close-profile-modal').addEventListener('click', () => {
+            document.getElementById('btn-close-profile-modal')?.addEventListener('click', () => {
                 document.getElementById('modal-profile').classList.add('hidden');
             });
-        });
 
-        // 3. 從 Firestore 讀取使用者成績（即時同步）
+            // 課前暖身 Modal 按鈕
+            document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
+                document.getElementById('modal-warmup-ask').classList.add('hidden');
+                if (currentSelectedStage) launchStageGame(currentSelectedStage);
+            });
+            document.getElementById('btn-warmup-no')?.addEventListener('click', () => {
+                document.getElementById('modal-warmup-ask').classList.add('hidden');
+                if (currentSelectedStage) launchStageGame(currentSelectedStage);
+            });
+            document.getElementById('btn-close-warmup-ask')?.addEventListener('click', () => {
+                document.getElementById('modal-warmup-ask').classList.add('hidden');
+            });
+
+            // 鎖定提示 Modal
+            document.getElementById('btn-close-locked-modal')?.addEventListener('click', () => {
+                document.getElementById('modal-locked').classList.add('hidden');
+            });
+
+            // 返回地圖
+            document.getElementById('btn-back-to-map')?.addEventListener('click', () => {
+                document.getElementById('game-view').classList.add('hidden');
+                document.getElementById('map-view').classList.remove('hidden');
+                document.getElementById('activity-player-content').innerHTML = '';
+            });
+
+            // 切換程度
+            document.getElementById('btn-level-trigger')?.addEventListener('click', () => {
+                document.getElementById('modal-select-initial-level').classList.remove('hidden');
+            });
+            document.getElementById('btn-close-level-modal')?.addEventListener('click', () => {
+                document.getElementById('modal-select-initial-level').classList.add('hidden');
+            });
+            document.getElementById('btn-confirm-initial-level')?.addEventListener('click', () => {
+                const selectedLvl = document.getElementById('initial-level-select').value;
+                currentLevel = selectedLvl;
+                document.getElementById('lbl-user-level').innerText = selectedLvl;
+                renderCourseMap(selectedLvl);
+                document.getElementById('modal-select-initial-level').classList.add('hidden');
+            });
+
+            // 排行榜 Modal
+            document.getElementById('btn-leaderboard-trigger')?.addEventListener('click', () => {
+                document.getElementById('modal-leaderboard').classList.remove('hidden');
+                loadLeaderboard();
+            });
+            document.getElementById('btn-close-leaderboard-modal')?.addEventListener('click', () => {
+                document.getElementById('modal-leaderboard').classList.add('hidden');
+            });
+        }
+
+        // 3. 讀取與監聽成績
         function listenToUserScores(uid) {
             if (!db) return;
 
-            // 監聽 users/{uid}/scores 或 grades 集合
             db.collection('users').doc(uid).collection('scores').onSnapshot((snapshot) => {
                 cachedUserScores = {};
                 let totalXP = 0;
 
                 snapshot.forEach((doc) => {
                     const data = doc.data();
-                    const stageCode = doc.id; // 以關卡代碼為 ID
                     const score = data.score || 0;
-                    cachedUserScores[stageCode] = score;
+                    cachedUserScores[doc.id] = score;
                     totalXP += score;
                 });
 
                 document.getElementById('lbl-xp').innerText = totalXP;
-                renderCourseMap(currentLevel); // 自動重繪地圖與分數
+                renderCourseMap(currentLevel);
             }, (error) => {
                 console.log("成績讀取失敗:", error);
                 renderCourseMap(currentLevel);
             });
         }
 
-        // 4. 載入排行榜數據
+        // 4. 排行榜
         function loadLeaderboard() {
             if (!db) return;
             const content = document.getElementById('leaderboard-content');
@@ -464,7 +528,7 @@
             });
         }
 
-        // 5. 渲染地圖
+        // 5. 繪製關卡地圖
         function renderCourseMap(level = "1A") {
             const container = document.getElementById('units-map-list');
             if (!container) return;
@@ -543,7 +607,7 @@
             });
         }
 
-        // 開啟遊戲視圖
+        // 開啟遊戲
         function launchStageGame(stage) {
             document.getElementById('map-view').classList.add('hidden');
             document.getElementById('game-view').classList.remove('hidden');
@@ -553,59 +617,6 @@
                 <iframe src="${stage.link}" style="width:100%; height:100%; border:none;" allow="microphone; autoplay;"></iframe>
             `;
         }
-
-        // 事件監聽綁定
-        window.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('btn-warmup-yes')?.addEventListener('click', () => {
-                document.getElementById('modal-warmup-ask').classList.add('hidden');
-                if (currentSelectedStage) launchStageGame(currentSelectedStage);
-            });
-
-            document.getElementById('btn-warmup-no')?.addEventListener('click', () => {
-                document.getElementById('modal-warmup-ask').classList.add('hidden');
-                if (currentSelectedStage) launchStageGame(currentSelectedStage);
-            });
-
-            document.getElementById('btn-close-warmup-ask')?.addEventListener('click', () => {
-                document.getElementById('modal-warmup-ask').classList.add('hidden');
-            });
-
-            document.getElementById('btn-close-locked-modal')?.addEventListener('click', () => {
-                document.getElementById('modal-locked').classList.add('hidden');
-            });
-
-            document.getElementById('btn-back-to-map')?.addEventListener('click', () => {
-                document.getElementById('game-view').classList.add('hidden');
-                document.getElementById('map-view').classList.remove('hidden');
-                document.getElementById('activity-player-content').innerHTML = '';
-            });
-
-            document.getElementById('btn-level-trigger')?.addEventListener('click', () => {
-                document.getElementById('modal-select-initial-level').classList.remove('hidden');
-            });
-
-            document.getElementById('btn-close-level-modal')?.addEventListener('click', () => {
-                document.getElementById('modal-select-initial-level').classList.add('hidden');
-            });
-
-            document.getElementById('btn-confirm-initial-level')?.addEventListener('click', () => {
-                const selectedLvl = document.getElementById('initial-level-select').value;
-                currentLevel = selectedLvl;
-                document.getElementById('lbl-user-level').innerText = selectedLvl;
-                renderCourseMap(selectedLvl);
-                document.getElementById('modal-select-initial-level').classList.add('hidden');
-            });
-
-            // 排行榜點擊
-            document.getElementById('btn-leaderboard-trigger')?.addEventListener('click', () => {
-                document.getElementById('modal-leaderboard').classList.remove('hidden');
-                loadLeaderboard();
-            });
-
-            document.getElementById('btn-close-leaderboard-modal')?.addEventListener('click', () => {
-                document.getElementById('modal-leaderboard').classList.add('hidden');
-            });
-        });
     </script>
 </body>
 </html>
